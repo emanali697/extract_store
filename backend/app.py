@@ -22,7 +22,9 @@ def _pipeline_status() -> dict:
         "pipeline_dir": str(PIPELINE_DIR),
         "main_exists": PIPELINE_MAIN.exists(),
         "run_v6_exists": (PIPELINE_DIR / "run_v6.py").exists(),
-    }from jobs import manager, Job
+    }
+
+from jobs import manager, Job
 from runner import run_pipeline, _read_results
 import firebase_service
 import traders_firebase_service
