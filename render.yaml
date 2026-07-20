@@ -26,7 +26,8 @@ services:
         value: uploads
       - key: JOBS_DIR
         value: jobs
-      - key: PIPELINE_DIR
-        value: ../pipeline
+      # Pipeline is auto-discovered by walking up from backend/.
+      # Include it in the repo (e.g. backend/pipeline/ or repo-root/pipeline/)
+      # or mount it as a secret file/disk and set PIPELINE_DIR if needed.
       - key: PYTHONUNBUFFERED
         value: '1'

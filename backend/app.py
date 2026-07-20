@@ -79,6 +79,11 @@ def _job_to_dict(job: Job) -> dict:
 @app.on_event("startup")
 def startup():
     manager.hydrate_from_db()
+    if not PIPELINE_DIR.is_dir():
+        raise RuntimeError(
+            f"Invalid PIPELINE_DIR: {PIPELINE_DIR}. "
+            "Set it to the directory containing pipeline/main.py, or unset it."
+        )
 
 
 @app.get("/")

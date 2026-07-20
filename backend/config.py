@@ -7,7 +7,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 # Load environment variables from backend/.env if present.
-load_dotenv()
+load_dotenv(BASE_DIR / ".env")
 
 BASE_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = BASE_DIR.parent
@@ -53,6 +53,11 @@ def _find_pipeline_dir():
 
 
 PIPELINE_DIR = _find_pipeline_dir()
+if not PIPELINE_DIR.is_dir():
+    raise RuntimeError(
+        f"PIPELINE_DIR is not a valid directory: {PIPELINE_DIR}. "
+        "Set it to the directory containing pipeline/main.py, or unset it."
+    )
 PIPELINE_MAIN = PIPELINE_DIR / "main.py"
 PIPELINE_RUN_V6 = PIPELINE_DIR / "run_v6.py"
 

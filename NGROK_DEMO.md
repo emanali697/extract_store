@@ -52,7 +52,6 @@ Use this when you want someone to try the frontend from anywhere while the backe
    TRADERS_COLLECTION=stores
    UPLOAD_DIR=uploads
    JOBS_DIR=jobs
-   PIPELINE_DIR=../pipeline
    ALLOWED_ORIGINS=https://extract-store-something.vercel.app,http://localhost:5173
    ```
    Replace `https://extract-store-something.vercel.app` with your real Vercel URL.

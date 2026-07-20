@@ -29,7 +29,6 @@ TRADERS_KEY_PATH=traders_data_live_key.json
 TRADERS_COLLECTION=stores
 UPLOAD_DIR=uploads
 JOBS_DIR=jobs
-PIPELINE_DIR=../pipeline
 PYTHONUNBUFFERED=1
 ALLOWED_ORIGINS=https://your-frontend-url.vercel.app,http://localhost:5173
 ```
