@@ -14,8 +14,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from config import UPLOAD_DIR, ALLOWED_ORIGINS, JOBS_DIR
-from jobs import manager, Job
+from config import UPLOAD_DIR, ALLOWED_ORIGINS, JOBS_DIR, PIPELINE_DIR, PIPELINE_MAIN
+
+
+def _pipeline_status() -> dict:
+    return {
+        "pipeline_dir": str(PIPELINE_DIR),
+        "main_exists": PIPELINE_MAIN.exists(),
+        "run_v6_exists": (PIPELINE_DIR / "run_v6.py").exists(),
+    }from jobs import manager, Job
 from runner import run_pipeline, _read_results
 import firebase_service
 import traders_firebase_service
@@ -79,6 +86,7 @@ def root():
         "version": "0.3.0",
         "status": "ok",
         "firebase": firebase_service.status(),
+        "pipeline": _pipeline_status(),
     }
 
 
@@ -87,6 +95,7 @@ def health():
     return {
         "firebase": firebase_service.status(),
         "traders": traders_firebase_service.status(),
+        "pipeline": _pipeline_status(),
     }
 
 

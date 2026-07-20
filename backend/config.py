@@ -35,7 +35,14 @@ JOBS_DIR.mkdir(parents=True, exist_ok=True)
 # Pipeline lives outside the backend now (after the user moved backend/frontend
 # into an `extract stores/` folder). Walk up the tree to locate it so this
 # config keeps working regardless of where the backend ends up.
+# Override with PIPELINE_DIR environment variable.
 def _find_pipeline_dir():
+    env_value = os.environ.get("PIPELINE_DIR")
+    if env_value:
+        path = Path(env_value)
+        if path.is_absolute():
+            return path
+        return BASE_DIR / path
     here = BASE_DIR
     for _ in range(4):  # walk up at most 4 levels
         candidate = here / "pipeline" / "main.py"

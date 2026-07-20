@@ -1,0 +1,32 @@
+# Render deployment blueprint.
+# After pushing this file, connect the repo in the Render dashboard
+# and it will provision the backend service automatically.
+# Secret files (firebase_key.json, traders_data_live_key.json) must be
+# uploaded manually in Render Dashboard > Environment > Secret Files.
+services:
+  - type: web
+    name: extract-store-backend
+    runtime: python
+    region: frankfurt
+    plan: free
+    branch: main
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app:app --host 0.0.0.0 --port ${PORT}
+    envVars:
+      - key: FIREBASE_KEY_PATH
+        value: firebase_key.json
+      - key: FIRESTORE_COLLECTION
+        value: stores
+      - key: TRADERS_KEY_PATH
+        value: traders_data_live_key.json
+      - key: TRADERS_COLLECTION
+        value: stores
+      - key: UPLOAD_DIR
+        value: uploads
+      - key: JOBS_DIR
+        value: jobs
+      - key: PIPELINE_DIR
+        value: ../pipeline
+      - key: PYTHONUNBUFFERED
+        value: '1'

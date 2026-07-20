@@ -226,16 +226,18 @@ queued → running → done | error | interrupted
 
 ### Backend
 
-Configuration is **hard-coded in `backend/config.py`**; there is no `.env` file.
+Configuration lives in `backend/config.py` and can be overridden via environment variables loaded from `backend/.env` (using `python-dotenv`). See `backend/.env.example` for the available variables.
 
 Important values:
 
-- `UPLOAD_DIR` — `backend/uploads/`
-- `JOBS_DIR` — `backend/jobs/`
-- `PIPELINE_DIR` — discovered by walking up to 4 parents looking for `pipeline/main.py`
-- `FIREBASE_KEY_PATH` — `backend/firebase_key.json`
-- `FIRESTORE_COLLECTION` — `"stores"`
-- `ALLOWED_ORIGINS` — `http://localhost:5173`, `http://127.0.0.1:5173`
+- `UPLOAD_DIR` — default `backend/uploads/` (override with `UPLOAD_DIR`)
+- `JOBS_DIR` — default `backend/jobs/` (override with `JOBS_DIR`)
+- `PIPELINE_DIR` — discovered by walking up to 4 parents looking for `pipeline/main.py`, unless `PIPELINE_DIR` is set
+- `FIREBASE_KEY_PATH` — default `backend/firebase_key.json` (override with `FIREBASE_KEY_PATH`)
+- `FIRESTORE_COLLECTION` — default `"stores"` (override with `FIRESTORE_COLLECTION`)
+- `ALLOWED_ORIGINS` — default Vite dev ports (override with comma-separated `ALLOWED_ORIGINS`)
+
+Service-account keys and `.env` are gitignored and must be supplied outside the repository.
 
 ### Frontend
 
@@ -329,12 +331,16 @@ Manual validation flow:
 
 ## Deployment
 
-There is **no production deployment configuration** in this repo. No Dockerfile, `docker-compose.yml`, GitHub Actions, or cloud manifests are present. The intended runtime is local development on Windows using Uvicorn directly.
+A split deployment blueprint is provided:
+
+- **Backend** → Render (`render.yaml`).
+- **Frontend** → Vercel (detected automatically from `frontend/`).
+
+See `DEPLOY.md` for detailed Render + Vercel setup, environment variables, and secret files.
 
 If deploying in the future, at minimum you will need to:
 
-- Externalize configuration from `backend/config.py` to environment variables or a config service.
-- Move service-account keys out of the repo and mount them as secrets.
+- Keep service-account keys out of the repo and mount them as secrets (already gitignored).
 - Decide whether the pipeline (`../pipeline/`) will be bundled or remain a sibling directory.
 - Replace SQLite with a proper database if running multiple backend workers.
 
