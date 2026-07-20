@@ -225,6 +225,9 @@ async def _run_subprocess(job: Job, cmd: list[str]) -> tuple[int, int | None]:
     job.log_lines.append(f"$ {' '.join(cmd)}")
     await _emit(job, {"type": "log", "line": f"$ {' '.join(cmd)}"})
 
+    import logging
+    logging.getLogger("runner").warning(f"DEBUG cwd={PIPELINE_DIR!r} exists={PIPELINE_DIR.exists()} is_dir={PIPELINE_DIR.is_dir()}")
+
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         cwd=str(PIPELINE_DIR),
