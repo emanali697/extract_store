@@ -6,11 +6,11 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-# Load environment variables from backend/.env if present.
-load_dotenv(BASE_DIR / ".env")
-
 BASE_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = BASE_DIR.parent
+
+# Load environment variables from backend/.env if present.
+load_dotenv(BASE_DIR / ".env")
 
 
 def _env_path(name: str, default: Path) -> Path:
