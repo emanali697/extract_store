@@ -1,0 +1,26 @@
+# Backend secrets and runtime outputs
+backend/.env
+backend/.env.local
+backend/*.key.json
+backend/firebase_key.json
+backend/newdb_key.json
+backend/traders_data_live_key.json
+backend/__pycache__/
+backend/**/*.pyc
+backend/venv/
+backend/.venv/
+backend/uploads/
+backend/jobs/
+backend/state.db
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/dist-ssr/
+frontend/*.local
+
+# Root
+.DS_Store
+*.log
+.vscode/
+.idea/

@@ -1,0 +1,41 @@
+# Environment variables (never commit real keys)
+.env
+.env.local
+.env.*.local
+
+# Service account keys (never commit these!)
+firebase_key.json
+newdb_key.json
+traders_data_live_key.json
+*.key.json
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.venv/
+env/
+ENV/
+
+# Uploads and outputs (generated at runtime)
+uploads/
+jobs/
+state.db
+*.db
+*.sqlite3
+
+# IDE
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+.DS_Store
+
+# Logs
+*.log
