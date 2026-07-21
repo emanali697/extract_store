@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -60,6 +61,13 @@ if not PIPELINE_DIR.is_dir():
     )
 PIPELINE_MAIN = PIPELINE_DIR / "main.py"
 PIPELINE_RUN_V6 = PIPELINE_DIR / "run_v6.py"
+
+# Python interpreter used to run the pipeline subprocesses.
+# The pipeline often has its own dependency set (opencv-python, google-cloud-vision,
+# etc.) that may not be installed in the backend virtualenv. Point this at the
+# Python executable that has those packages installed. Defaults to the same Python
+# running the backend so existing setups keep working.
+PIPELINE_PYTHON = Path(os.environ.get("PIPELINE_PYTHON", sys.executable)).resolve()
 
 # Firebase default project
 FIREBASE_KEY_PATH = _env_path("FIREBASE_KEY_PATH", BASE_DIR / "firebase_key.json")

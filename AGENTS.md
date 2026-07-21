@@ -233,6 +233,7 @@ Important values:
 - `UPLOAD_DIR` — default `backend/uploads/` (override with `UPLOAD_DIR`)
 - `JOBS_DIR` — default `backend/jobs/` (override with `JOBS_DIR`)
 - `PIPELINE_DIR` — discovered by walking up to 4 parents looking for `pipeline/main.py`, unless `PIPELINE_DIR` is set
+- `PIPELINE_PYTHON` — Python interpreter used to run the pipeline; defaults to the same Python running the backend, but can be pointed at a different environment that has the pipeline dependencies installed
 - `FIREBASE_KEY_PATH` — default `backend/firebase_key.json` (override with `FIREBASE_KEY_PATH`)
 - `FIRESTORE_COLLECTION` — default `"stores"` (override with `FIRESTORE_COLLECTION`)
 - `ALLOWED_ORIGINS` — default Vite dev ports (override with comma-separated `ALLOWED_ORIGINS`)

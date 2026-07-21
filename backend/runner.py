@@ -14,10 +14,9 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import sys
 from pathlib import Path
 
-from config import PIPELINE_MAIN, PIPELINE_DIR
+from config import PIPELINE_MAIN, PIPELINE_DIR, PIPELINE_PYTHON
 from jobs import Job, manager
 from stages import parse_stage_line, parse_progress_hint
 
@@ -221,30 +220,67 @@ async def _run_subprocess(job: Job, cmd: list[str]) -> tuple[int, int | None]:
     """
     Spawn a pipeline subprocess, stream its stdout, route STAGE markers and
     structured progress to the UI. Returns (return_code, last_ui_stage).
+
+    The subprocess runs via a blocking subprocess.Popen inside a dedicated OS
+    thread. This avoids asyncio event loop limitations on Windows where uvicorn's
+    --reload mode can leave the server with a loop that does not support
+    subprocesses (NotImplementedError from create_subprocess_exec).
     """
+    import queue as _queue
+    import subprocess
+    import threading
+
     job.log_lines.append(f"$ {' '.join(cmd)}")
     await _emit(job, {"type": "log", "line": f"$ {' '.join(cmd)}"})
 
     if not PIPELINE_DIR.is_dir():
         raise RuntimeError(f"Cannot run pipeline: cwd is not a directory: {PIPELINE_DIR}")
 
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        cwd=str(PIPELINE_DIR),
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
-        env={**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUNBUFFERED": "1"},
-    )
+    stdout_q: _queue.Queue[str | None] = _queue.Queue(maxsize=1000)
+    result_q: _queue.Queue[int] = _queue.Queue(maxsize=1)
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUNBUFFERED": "1"}
+
+    def _reader() -> None:
+        proc = subprocess.Popen(
+            cmd,
+            cwd=str(PIPELINE_DIR),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            env=env,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
+        )
+        try:
+            for line in proc.stdout:
+                stdout_q.put(line.rstrip())
+        finally:
+            proc.stdout.close()
+            rc = proc.wait()
+            stdout_q.put(None)  # sentinel so the async loop stops cleanly
+            result_q.put(rc)
+
+    def _get_line(q: _queue.Queue[str | None], timeout: float = 0.2) -> str | None:
+        try:
+            return q.get(timeout=timeout)
+        except _queue.Empty:
+            return "__EMPTY__"
+
+    thread = threading.Thread(target=_reader, daemon=True)
+    thread.start()
 
     current_ui_stage: int | None = None
 
     while True:
-        raw_line = await proc.stdout.readline()
-        if not raw_line:
-            break
-        line = raw_line.decode("utf-8", errors="replace").rstrip()
-        if not line:
+        line = await asyncio.to_thread(_get_line, stdout_q)
+        if line == "__EMPTY__":
+            # Process finished without more output?
+            if not result_q.empty():
+                break
             continue
+        if line is None:
+            break
 
         job.log_lines.append(line)
         await _emit(job, {"type": "log", "line": line})
@@ -263,7 +299,8 @@ async def _run_subprocess(job: Job, cmd: list[str]) -> tuple[int, int | None]:
                 cur, tot = hint
                 await _mark_stage(job, current_ui_stage, "active", current=cur, total=tot)
 
-    rc = await proc.wait()
+    rc = result_q.get() if not result_q.empty() else 0
+    thread.join(timeout=5.0)
     return rc, current_ui_stage
 
 
@@ -278,7 +315,7 @@ async def run_pipeline(job: Job) -> None:
         job.stages[i] = {"status": "pending"}
 
     # ---------- v3 ----------
-    cmd_v3 = [sys.executable, str(PIPELINE_MAIN), job.video_path, job.output_dir]
+    cmd_v3 = [str(PIPELINE_PYTHON), str(PIPELINE_MAIN), job.video_path, job.output_dir]
     if not job.enable_places:
         cmd_v3.append("--skip-places")
     if getattr(job, "start_seconds", 0):
@@ -303,7 +340,7 @@ async def run_pipeline(job: Job) -> None:
         await _emit(job, {"type": "log", "line": "--- STAGE 11: v5 matching ---"})
         await _mark_stage(job, 7, "active", current=0, total=0)
 
-        cmd_v5 = [sys.executable, str(PIPELINE_MAIN_V5), job.output_dir, job.output_dir]
+        cmd_v5 = [str(PIPELINE_PYTHON), str(PIPELINE_MAIN_V5), job.output_dir, job.output_dir]
         rc5, _ = await _run_subprocess(job, cmd_v5)
         if rc5 == 0:
             v5_ok = True
@@ -319,7 +356,7 @@ async def run_pipeline(job: Job) -> None:
     v5_json = Path(job.output_dir) / "stores_v5_raw.json"
     if PIPELINE_RUN_V6.exists() and v5_json.exists():
         await _emit(job, {"type": "log", "line": "--- STAGE 12: v6 orchestrator ---"})
-        cmd_v6 = [sys.executable, str(PIPELINE_RUN_V6), job.output_dir]
+        cmd_v6 = [str(PIPELINE_PYTHON), str(PIPELINE_RUN_V6), job.output_dir]
         if not job.enable_status:
             cmd_v6.append("--skip-status")
         rc6, _ = await _run_subprocess(job, cmd_v6)
