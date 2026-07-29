@@ -1,0 +1,11 @@
+backend/
+functions/
+.vercel/
+.env.local
+*.log
+
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/.vercel/
+frontend/.env*

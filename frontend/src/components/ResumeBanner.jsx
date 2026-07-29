@@ -4,7 +4,10 @@ import { useAppStore } from '../store/appStore'
 import { fetchAllJobs, fetchResults } from '../services/api'
 
 const STATUS_LABEL = {
+  partial:     { text: 'مكتمل جزئيًا', cls: 'bg-warning text-dark' },
+  uploading:   { text: 'في انتظار اكتمال الرفع', cls: 'bg-secondary' },
   running:     { text: 'شغّال دلوقتي', cls: 'bg-warning text-dark' },
+  finalizing:  { text: 'جاري تجهيز النتائج', cls: 'bg-primary' },
   done:        { text: 'مكتمل',         cls: 'bg-success' },
   interrupted: { text: 'انقطع',         cls: 'bg-secondary' },
   error:       { text: 'خطأ',           cls: 'bg-danger' },
@@ -13,7 +16,7 @@ const STATUS_LABEL = {
 
 function pickPriority(jobs) {
   // Order: running > interrupted > done > error > queued
-  const priority = { running: 4, interrupted: 3, done: 2, error: 1, queued: 0 }
+  const priority = { running: 7, finalizing: 6, queued: 5, interrupted: 4, partial: 3, done: 2, error: 1, uploading: 0 }
   return [...jobs].sort((a, b) =>
     (priority[b.status] ?? 0) - (priority[a.status] ?? 0)
   )[0]
@@ -57,7 +60,7 @@ export default function ResumeBanner() {
 
     setLoading(false)
     setDismissed(true)
-    navigate(pick.status === 'done' ? '/results' : '/progress')
+    navigate(['done', 'partial'].includes(pick.status) ? '/results' : '/progress')
   }
 
   if (!pick || dismissed) return null

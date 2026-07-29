@@ -9,8 +9,8 @@ const TIER_LABEL = {
   3: 'Tier 3 — يحتاج تحقق',
 }
 
-// TEMP: traders-data-live integration is disabled until explicitly requested again.
-const TRADERS_ENABLED = false
+// Both this UI switch and the backend TRADERS_WRITES_ENABLED switch must be true.
+const TRADERS_ENABLED = import.meta.env.VITE_TRADERS_WRITES_ENABLED === 'true'
 
 const SRC_LABEL = {
   google_places: 'Google',
@@ -30,6 +30,8 @@ export default function ResultsPage() {
   const [pushing, setPushing] = useState(false)
   const [pushResult, setPushResult] = useState(null)
   const [pushError, setPushError] = useState('')
+  const [downloadBusy, setDownloadBusy] = useState('')
+  const [downloadError, setDownloadError] = useState('')
 
   // traders-data-live integration
   const [tradersReady, setTradersReady] = useState(null)
@@ -43,11 +45,11 @@ export default function ResultsPage() {
   useEffect(() => {
     fetchHealth().then((h) => {
       setFbReady(!!h?.firebase?.ready)
-      setTradersReady(!!h?.traders?.ready)
+      setTradersReady(!!h?.traders?.ready && h?.traders?.writes_enabled === true)
     }).catch(() => { setFbReady(false); setTradersReady(false) })
   }, [])
 
-  const stores = results?.stores ?? []
+  const stores = useMemo(() => results?.stores ?? [], [results])
   const summary = results?.summary ?? { total: 0, active: 0, phones: 0, precise: 0 }
 
   const eligibleForTraders = useMemo(
@@ -119,6 +121,25 @@ export default function ResultsPage() {
       setPushError(e?.response?.data?.detail || e?.message || 'فشل الرفع لـ Firestore')
     } finally {
       setPushing(false)
+    }
+  }
+
+  const handleDownload = async (kind) => {
+    setDownloadBusy(kind)
+    setDownloadError('')
+    try {
+      const url = kind === 'excel'
+        ? await downloadExcelUrl(jobId)
+        : await downloadCsvUrl(jobId)
+      window.location.assign(url)
+    } catch (e) {
+      setDownloadError(
+        e?.response?.data?.detail
+        || e?.message
+        || 'تعذر تجهيز رابط تحميل الملف'
+      )
+    } finally {
+      setDownloadBusy('')
     }
   }
 
@@ -265,22 +286,36 @@ export default function ResultsPage() {
                 Excel v6 الكامل بكل الأعمدة والألوان والمصادر (نفس شكل الـ output_v6).
               </p>
               <div className="d-flex flex-wrap gap-2">
-                <a
-                  href={downloadExcelUrl(jobId)}
+                <button
+                  type="button"
                   className="btn btn-brand"
-                  download
+                  disabled={Boolean(downloadBusy)}
+                  onClick={() => handleDownload('excel')}
                 >
+                  {downloadBusy === 'excel' && (
+                    <span className="spinner-border spinner-border-sm me-2" />
+                  )}
                   <i className="bi bi-file-earmark-excel me-1"></i> Excel كامل (v6)
-                </a>
-                <a
-                  href={downloadCsvUrl(jobId)}
+                </button>
+                <button
+                  type="button"
                   className="btn btn-outline-success"
-                  download
+                  disabled={Boolean(downloadBusy)}
+                  onClick={() => handleDownload('csv')}
                   title="اسم المتجر، الإحداثيات، التصنيف، الهاتف، الشارع، المدينة، الحي"
                 >
+                  {downloadBusy === 'csv' && (
+                    <span className="spinner-border spinner-border-sm me-2" />
+                  )}
                   <i className="bi bi-filetype-csv me-1"></i> CSV للبرنامج الآخر
-                </a>
+                </button>
               </div>
+              {downloadError && (
+                <div className="alert alert-danger small mt-3 mb-0">
+                  <i className="bi bi-exclamation-triangle me-1"></i>
+                  {downloadError}
+                </div>
+              )}
             </div>
           </div>
         </div>

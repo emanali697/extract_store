@@ -1,7 +1,13 @@
 import { useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAppStore } from '../store/appStore'
-import { uploadVideo, createJob } from '../services/api'
+import {
+  createJob,
+  isLocalBackend,
+  startJob,
+  uploadVideoToBackend,
+} from '../services/api'
+import { uploadVideoToStorage, isFirebaseReady } from '../services/firestoreService'
 import StageList from '../components/StageList'
 
 const ACCEPT = ['video/mp4', 'video/quicktime', 'video/x-msvideo', 'video/x-matroska']
@@ -16,19 +22,20 @@ export default function UploadPage() {
   const navigate = useNavigate()
   const inputRef = useRef(null)
   const {
-    videoFile, videoName, videoSizeMb, videoPath,
+    videoFile, videoName, videoSizeMb,
     uploadStatus, uploadProgress, uploadError,
     streetName, city, district, speedMode, enablePlaces, enableStatus,
     setVideo, clearVideo,
-    setUploadStatus, setUploadProgress, setVideoPath,
+    setUploadStatus, setUploadProgress,
     startAnalysis,
   } = useAppStore()
 
   const [dragOver, setDragOver] = useState(false)
   const [error, setError] = useState('')
   const [starting, setStarting] = useState(false)
+  const [startStep, setStartStep] = useState('')
 
-  const handleFile = async (file) => {
+  const handleFile = (file) => {
     if (!file) return
     setError('')
     if (file.size > MAX_BYTES) {
@@ -40,18 +47,6 @@ export default function UploadPage() {
       return
     }
     setVideo({ file, name: file.name, sizeMb: file.size / (1024 * 1024) })
-
-    // upload to backend
-    try {
-      setUploadStatus('uploading')
-      const data = await uploadVideo(file, {
-        onProgress: (pct) => setUploadProgress(pct),
-      })
-      setVideoPath(data.path)
-    } catch (e) {
-      const msg = e?.response?.data?.detail || e?.message || 'فشل رفع الفيديو'
-      setUploadStatus('error', msg)
-    }
   }
 
   const onDrop = (e) => {
@@ -60,15 +55,45 @@ export default function UploadPage() {
     handleFile(e.dataTransfer.files?.[0])
   }
 
-  const uploadDone = uploadStatus === 'done' && !!videoPath
-  const canStart = uploadDone && !!streetName.trim() && !starting
+  const canStart = !!videoFile && !!streetName.trim() && !starting
 
   const handleStart = async () => {
     setError('')
     setStarting(true)
+    setStartStep('creating')
     try {
+      if (!isLocalBackend && !isFirebaseReady()) {
+        throw new Error('Firebase not initialized. Check VITE_FIREBASE_* env vars.')
+      }
+
+      if (isLocalBackend) {
+        // FastAPI receives the complete video first. POST /jobs starts analysis
+        // only after /upload has returned successfully.
+        setStartStep('uploading')
+        setUploadStatus('uploading')
+        const uploaded = await uploadVideoToBackend(videoFile, {
+          onProgress: (pct) => setUploadProgress(pct),
+        })
+        setUploadStatus('done')
+
+        setStartStep('starting')
+        const { jobId } = await createJob({
+          videoPath: uploaded.path,
+          streetName,
+          city,
+          district,
+          speedMode,
+          enablePlaces,
+          enableStatus,
+        })
+        startAnalysis(jobId)
+        navigate('/progress')
+        return
+      }
+
+      // 1. Create job first so we know the jobId
       const { jobId } = await createJob({
-        videoPath,
+        videoName,
         streetName,
         city,
         district,
@@ -76,13 +101,27 @@ export default function UploadPage() {
         enablePlaces,
         enableStatus,
       })
+
+      // 2. Upload video to Firebase Storage
+      setStartStep('uploading')
+      setUploadStatus('uploading')
+      await uploadVideoToStorage(videoFile, jobId, {
+        onProgress: (pct) => setUploadProgress(pct),
+      })
+      setUploadStatus('done')
+
+      // 3. Start the pipeline
+      setStartStep('starting')
+      await startJob({ jobId })
       startAnalysis(jobId)
       navigate('/progress')
     } catch (e) {
       const msg = e?.response?.data?.detail || e?.message || 'فشل بدء التحليل'
       setError(msg)
+      setUploadStatus('error', msg)
     } finally {
       setStarting(false)
+      setStartStep('')
     }
   }
 
@@ -194,7 +233,10 @@ export default function UploadPage() {
         >
           {starting ? (
             <>
-              <span className="spinner-border spinner-border-sm me-2" /> جاري البدء...
+              <span className="spinner-border spinner-border-sm me-2" />
+              {startStep === 'uploading' && 'جاري رفع الفيديو كاملًا...'}
+              {startStep === 'starting' && 'تم الرفع — جاري بدء التحليل...'}
+              {startStep === 'creating' && 'جاري تجهيز مهمة التحليل...'}
             </>
           ) : (
             <>

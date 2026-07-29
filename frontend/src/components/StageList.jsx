@@ -11,9 +11,18 @@ export default function StageList() {
         const status = stageStatus[idx] ?? 'pending'
         const prog = stageProgress[idx]
         let detail = s.desc
+        if (status === 'skipped') {
+          detail = 'تم تخطي هذه المرحلة'
+        }
+        if (status === 'active' && prog?.phase) {
+          detail = prog.phase
+        }
         if (prog && prog.total > 0) {
           const pct = Math.round((prog.current / prog.total) * 100)
-          detail = `${prog.current}/${prog.total} (${pct}%)`
+          const progressText = `${prog.current}/${prog.total} (${pct}%)`
+          detail = status === 'active' && prog.phase
+            ? `${prog.phase} — ${progressText}`
+            : progressText
         }
         return (
           <div key={idx} className={`stage-row ${status}`}>

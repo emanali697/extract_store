@@ -1,90 +1,178 @@
-# Deployment guide — Render backend + Vercel frontend
+# Deployment guide — Firebase Functions backend + Vercel frontend
 
-This project uses a split deployment:
+> **Before you deploy:** read [`FIREBASE_CONFIG.md`](./FIREBASE_CONFIG.md) for the exact values you need to fill (Firebase web API key, Cloud Functions env vars, traders secret, etc.).
+
+This project uses:
 
 - **Frontend** (React + Vite) → Vercel
-- **Backend** (FastAPI + Python pipeline) → Render
+- **Backend** (Firebase Functions + Cloud Storage + Firestore) → Firebase
+
+The previous Render backend deployment is now replaced by Firebase Functions.
 
 ---
 
-## 1. Deploy the backend on Render
+## 1. Firebase project setup
 
-1. Go to [render.com](https://render.com) and sign in with GitHub.
-2. Click **New +** → **Web Service**.
-3. Connect the `emanali697/extract_store` repo.
-4. Render should auto-detect `render.yaml` and fill these fields:
-   - **Name:** `extract-store-backend`
-   - **Root Directory:** `backend`
-   - **Build Command:** `pip install -r requirements.txt`
-   - **Start Command:** `uvicorn app:app --host 0.0.0.0 --port ${PORT}`
+1. Go to the [Firebase Console](https://console.firebase.google.com/).
+2. Open the project `store-extract`.
+3. Enable the following APIs in **Google Cloud Console** for the same project:
+   - Cloud Functions API
+   - Cloud Run API (required by Cloud Functions 2nd gen)
+   - Cloud Tasks API
+   - Cloud Pub/Sub API
+   - Cloud Firestore API
+   - Cloud Storage API
+   - Cloud Vision API
+   - Vertex AI API
+   - Places API (New)
 
-### Required environment variables
+4. In Firebase Console, enable **Firestore** and **Storage**.
+5. Create a **Cloud Storage bucket** if it does not exist. The default bucket is `store-extract.appspot.com`.
+6. Firebase deploy creates the `runpipelinetask` Cloud Tasks queue. The
+   `run-pipeline` Pub/Sub topic is retained only for compatibility with jobs
+   queued before the Cloud Tasks migration.
 
-In the Render dashboard, open **Environment** and add:
+### Vertex AI permission
 
-```env
-FIREBASE_KEY_PATH=firebase_key.json
-FIRESTORE_COLLECTION=stores
-TRADERS_KEY_PATH=traders_data_live_key.json
-TRADERS_COLLECTION=stores
-UPLOAD_DIR=uploads
-JOBS_DIR=jobs
-PYTHONUNBUFFERED=1
-ALLOWED_ORIGINS=https://your-frontend-url.vercel.app,http://localhost:5173
+The identity that runs the pipeline must have the **Vertex AI User**
+role (`roles/aiplatform.user`) in `store-extract`. Without it, Gemini returns
+`403 PERMISSION_DENIED` and no stores can be extracted.
+
+For deployed 2nd-gen Firebase Functions, grant the role to the default Compute
+Engine runtime service account:
+
+```powershell
+$projectNumber = gcloud projects describe store-extract --format="value(projectNumber)"
+$runtimeServiceAccount = "$projectNumber-compute@developer.gserviceaccount.com"
+gcloud projects add-iam-policy-binding store-extract `
+  --member="serviceAccount:$runtimeServiceAccount" `
+  --role="roles/aiplatform.user"
 ```
 
-Replace `https://your-frontend-url.vercel.app` with your actual Vercel frontend URL after deploying it.
+For local FastAPI development with `backend/firebase_key.json`, grant the same
+role to the service account referenced by that key:
 
-### Required secret files
+```powershell
+$localServiceAccount = (Get-Content backend/firebase_key.json | ConvertFrom-Json).client_email
+gcloud projects add-iam-policy-binding store-extract `
+  --member="serviceAccount:$localServiceAccount" `
+  --role="roles/aiplatform.user"
+```
 
-In Render dashboard, go to **Environment > Secret Files** and upload:
+---
 
-- `firebase_key.json` → content of your Firebase service account key.
-- `traders_data_live_key.json` → content of your traders-data-live service account key.
+## 2. Configure environment variables and secrets
 
-These files appear inside `backend/` at runtime.
+### Service accounts
 
-### The pipeline
+The default Firebase project uses the runtime service account, so no key file is needed for the main project.
 
-The ML pipeline lives **outside** this repo (`../pipeline/`). On Render you must either:
-
-- Include the `pipeline/` folder inside the repo (for example at `backend/pipeline/`), or
-- Upload the pipeline files to Render using SSH/disks (advanced).
-
-If you place the pipeline inside `backend/pipeline/`, set `PIPELINE_DIR=pipeline` instead of `../pipeline`.
-
-### Verify deployment
-
-Open:
+For the **traders-data-live** project, you need to provide the service account key. In Firebase Console, go to **Functions secrets** and create a secret named:
 
 ```text
-https://extract-store-backend.onrender.com/health
+TRADERS_SERVICE_ACCOUNT_JSON
 ```
 
-You should see JSON with `firebase`, `traders`, and `pipeline` status.
+Paste the full JSON content of `traders_data_live_key.json` as the value.
+
+### Environment variables
+
+In `firebase.json` or via `firebase functions:config:set`, set:
+
+```bash
+firebase functions:config:set \
+  app.allowed_origins="https://extract-store.vercel.app,http://localhost:5173" \
+  app.gcp_project_id="store-extract" \
+  app.pipeline_topic="run-pipeline" \
+  app.storage_bucket="store-extract.appspot.com" \
+  app.firestore_collection="stores" \
+  app.traders_collection="stores"
+```
+
+Note: in the current code, environment variables are read from `process.env`. With Firebase Functions config, they are prefixed with `app.` and accessed as `process.env.app_...`. Update `functions/config.py` if you use Functions config instead of plain environment variables.
 
 ---
 
-## 2. Deploy the frontend on Vercel
+## 3. Deploy Firebase Functions
+
+From the repo root:
+
+```powershell
+cd "D:/sharea elnassim/extract stores"
+firebase login
+firebase deploy --only functions
+```
+
+The first deploy may take several minutes because the pipeline dependencies (opencv-python, google-cloud-vision, google-genai, etc.) are large.
+
+---
+
+## 4. Deploy the frontend on Vercel
 
 1. Go to [vercel.com](https://vercel.com) and import the same GitHub repo.
 2. Vercel should auto-detect the `frontend/` folder as a Vite project.
 3. In **Environment Variables**, add:
 
 ```env
-VITE_API_BASE_URL=https://extract-store-backend.onrender.com
+VITE_API_BASE_URL=https://us-central1-store-extract.cloudfunctions.net
+VITE_FIREBASE_API_KEY=...
+VITE_FIREBASE_AUTH_DOMAIN=store-extract.firebaseapp.com
+VITE_FIREBASE_PROJECT_ID=store-extract
+VITE_FIREBASE_STORAGE_BUCKET=store-extract.appspot.com
+VITE_FIREBASE_SENDER_ID=...
+VITE_FIREBASE_APP_ID=...
 ```
 
-Use the actual Render backend URL from step 1.
+Use the actual Firebase Functions URL from the deploy step.
 
 4. Deploy.
 
 ---
 
-## 3. Local development
+## 5. Local development with Firebase emulators
 
-For local development the default API URL is `http://localhost:8000`.
+Install the Firebase emulators if not already installed:
 
-Copy `frontend/.env.example` to `frontend/.env.development` and fill in your local backend URL if needed.
+```powershell
+firebase emulators:start --only functions,firestore,storage,pubsub
+```
 
-Copy `backend/.env.example` to `backend/.env` and fill in your Firebase key paths.
+In another terminal, start the frontend:
+
+```powershell
+cd frontend
+npm run dev
+```
+
+Make sure `frontend/.env.development` points to the emulator:
+
+```env
+VITE_API_BASE_URL=http://127.0.0.1:5001/store-extract/us-central1
+```
+
+---
+
+## 6. Important notes
+
+- The ML pipeline is copied into `functions/pipeline/` during deployment.
+- Video files are uploaded directly from the browser to Firebase Storage.
+- Progress is streamed to the frontend via Firestore snapshots.
+- The primary pipeline worker runs through Cloud Tasks with a 30-minute
+  dispatch deadline, 4 GB memory, concurrency 1, and up to 3 instances. Very
+  large videos that need more than 30 minutes must be split or moved to a
+  longer-running compute service.
+- Cloud Vision, Gemini, and Places API billing is separate from Firebase Functions billing.
+
+---
+
+## 7. Verify deployment
+
+Open the health endpoint:
+
+```text
+https://us-central1-store-extract.cloudfunctions.net/health
+```
+
+You should see JSON with `firebase`, `traders`, and `pipeline` status.
+
+Then upload a video from the frontend and verify the pipeline completes.

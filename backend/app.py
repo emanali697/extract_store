@@ -14,7 +14,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from config import UPLOAD_DIR, ALLOWED_ORIGINS, JOBS_DIR, PIPELINE_DIR, PIPELINE_MAIN
+from config import (
+    UPLOAD_DIR,
+    ALLOWED_ORIGINS,
+    JOBS_DIR,
+    PIPELINE_DIR,
+    PIPELINE_MAIN,
+    TRADERS_WRITES_ENABLED,
+)
 
 
 def _pipeline_status() -> dict:
@@ -57,9 +64,9 @@ class ApproveRequest(BaseModel):
     stores: list[dict]
 
 
-def _job_to_dict(job: Job) -> dict:
+def _job_to_dict(job: Job, *, include_results: bool = True) -> dict:
     """Serialize a Job dataclass for the API."""
-    return {
+    payload = {
         "job_id": job.job_id,
         "video_path": job.video_path,
         "street_name": job.street_name,
@@ -72,8 +79,12 @@ def _job_to_dict(job: Job) -> dict:
         "error": job.error,
         "output_dir": job.output_dir,
         "stages": job.stages,
-        "results": job.results,
+        "has_results": bool(job.results),
+        "log_lines": job.log_lines[-200:],
     }
+    if include_results:
+        payload["results"] = job.results
+    return payload
 
 
 @app.on_event("startup")
@@ -99,9 +110,11 @@ def root():
 
 @app.get("/health")
 def health():
+    traders = traders_firebase_service.status()
+    traders["writes_enabled"] = TRADERS_WRITES_ENABLED
     return {
         "firebase": firebase_service.status(),
-        "traders": traders_firebase_service.status(),
+        "traders": traders,
         "pipeline": _pipeline_status(),
     }
 
@@ -130,8 +143,8 @@ async def create_job(settings: JobSettings):
 def list_jobs(limit: int = 20):
     jobs = manager.all()
     # newest first
-    jobs.sort(key=lambda j: j.job_id, reverse=True)
-    return {"jobs": [_job_to_dict(j) for j in jobs[:limit]]}
+    jobs.sort(key=lambda j: j.created_at, reverse=True)
+    return {"jobs": [_job_to_dict(j, include_results=False) for j in jobs[:limit]]}
 
 
 @app.get("/jobs/{job_id}")
@@ -139,7 +152,7 @@ def get_job(job_id: str):
     job = manager.get(job_id)
     if not job:
         raise HTTPException(404, "job not found")
-    return _job_to_dict(job)
+    return _job_to_dict(job, include_results=False)
 
 
 @app.get("/jobs/{job_id}/results")
@@ -188,6 +201,8 @@ def job_traders_preview(job_id: str, body: ApproveRequest):
 @app.post("/jobs/{job_id}/traders/push")
 def job_traders_push(job_id: str, body: ApproveRequest):
     """Actually write the stores to traders-data-live."""
+    if not TRADERS_WRITES_ENABLED:
+        raise HTTPException(403, "الكتابة إلى traders-data-live معطلة حالياً")
     job = manager.get(job_id)
     if not job:
         raise HTTPException(404, "job not found")

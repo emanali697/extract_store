@@ -24,3 +24,6 @@ frontend/*.local
 *.log
 .vscode/
 .idea/
+
+.vercel/
+.env.local

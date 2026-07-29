@@ -1,7 +1,6 @@
-// Firebase init — هتتفعّل لما تيجي الـ Service Account / Web Config من المستخدم.
-// دلوقتي ساكتة عشان متكسرش الـ build.
-
 import { initializeApp, getApps } from 'firebase/app'
+import { getStorage } from 'firebase/storage'
+import { getFirestore } from 'firebase/firestore'
 
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
@@ -17,3 +16,6 @@ export const firebaseReady = Boolean(firebaseConfig.apiKey && firebaseConfig.pro
 export const firebaseApp = firebaseReady
   ? (getApps()[0] ?? initializeApp(firebaseConfig))
   : null
+
+export const firebaseStorage = firebaseApp ? getStorage(firebaseApp) : null
+export const firebaseFirestore = firebaseApp ? getFirestore(firebaseApp) : null
