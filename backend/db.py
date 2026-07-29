@@ -93,7 +93,7 @@ def upsert_job(job) -> None:
                 job.status, job.error, job.output_dir,
                 json.dumps(job.stages, default=str),
                 json.dumps(job.results, default=str) if job.results else None,
-                _t.time(), _t.time(),
+                getattr(job, "created_at", _t.time()), _t.time(),
             ),
         )
 

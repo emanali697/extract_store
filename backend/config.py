@@ -44,6 +44,13 @@ def _find_pipeline_dir():
         if path.is_absolute():
             return path
         return BASE_DIR / path
+
+    # Firebase Functions contains the deployable pipeline copy. Reuse it for
+    # local development when the former external ../pipeline folder is absent.
+    bundled_pipeline = PROJECT_ROOT / "functions" / "pipeline"
+    if (bundled_pipeline / "main.py").exists():
+        return bundled_pipeline
+
     here = BASE_DIR
     for _ in range(4):  # walk up at most 4 levels
         candidate = here / "pipeline" / "main.py"
@@ -76,6 +83,11 @@ FIRESTORE_COLLECTION = os.environ.get("FIRESTORE_COLLECTION", "stores")
 # traders-data-live project
 TRADERS_KEY_PATH = _env_path("TRADERS_KEY_PATH", BASE_DIR / "traders_data_live_key.json")
 TRADERS_COLLECTION = os.environ.get("TRADERS_COLLECTION", "stores")
+TRADERS_PROJECT_ID = os.environ.get("TRADERS_PROJECT_ID", "traders-data-live")
+TRADERS_WRITES_ENABLED = (
+    os.environ.get("TRADERS_WRITES_ENABLED", "false").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
 
 # CORS — Vite dev server (covers common Vite ports in case 5173 is taken)
 _allowed = os.environ.get("ALLOWED_ORIGINS")

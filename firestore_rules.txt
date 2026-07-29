@@ -1,0 +1,17 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // The public frontend only watches a job document for live progress.
+    // All job creation and updates go through trusted Cloud Functions.
+    match /jobs/{jobId} {
+      allow read: if true;
+      allow create, update, delete: if false;
+    }
+
+    // Keep every other collection inaccessible from the browser.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

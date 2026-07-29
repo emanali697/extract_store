@@ -1,73 +1,153 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAppStore } from '../store/appStore'
 import StageList from '../components/StageList'
 import { STAGES } from '../data/stages'
-import { openProgressSocket } from '../services/api'
+import { subscribeToJob } from '../services/firestoreService'
+import { fetchJobStatus, fetchResults } from '../services/api'
 
 export default function ProgressPage() {
   const navigate = useNavigate()
   const {
     jobId, analysisStarted, analysisDone,
+    analysisStatus, analysisError,
     videoName, videoSizeMb, streetName,
     stageStatus,
-    updateStage, finishAnalysis, setReviewItems,
+    updateStage, finishAnalysis, setReviewItems, setAnalysisState,
   } = useAppStore()
 
-  const wsRef = useRef(null)
   const [logLines, setLogLines] = useState([])
   const [connectionState, setConnectionState] = useState('connecting')
 
   useEffect(() => {
     if (!analysisStarted || !jobId) return
+    if (import.meta.env.VITE_ENABLE_FIRESTORE_REALTIME !== 'true') return
 
-    let cancelled = false
+    let unsub
+    try {
+      unsub = subscribeToJob(jobId, {
+        onEvent: async (evt) => {
+          const data = evt.data
+          if (!data) return
 
-    const ws = openProgressSocket(jobId, {
-      onEvent: (evt) => {
-        if (cancelled) return
-        if (evt.type === 'stage') {
-          updateStage(evt.stage, {
-            status: evt.status,
-            current: evt.current ?? undefined,
-            total: evt.total ?? undefined,
+          setConnectionState('open')
+          setAnalysisState(data.status || 'queued', data.error || '')
+
+          // Update stages from Firestore document
+          const stages = data.stages || {}
+          Object.entries(stages).forEach(([idx, entry]) => {
+            updateStage(Number(idx), {
+              status: entry.status,
+              current: entry.current ?? undefined,
+              total: entry.total ?? undefined,
+              phase: entry.phase ?? undefined,
+            })
           })
-        } else if (evt.type === 'log') {
-          setLogLines((prev) => {
-            const next = [...prev, evt.line]
-            return next.length > 200 ? next.slice(-200) : next
-          })
-        } else if (evt.type === 'results') {
-          finishAnalysis(evt.results)
-          setReviewItems(evt.results?.review ?? [])
-        } else if (evt.type === 'status') {
-          if (evt.status === 'error') {
-            setLogLines((p) => [...p, `❌ ${evt.error || 'error'}`])
+
+          // Update logs
+          const logs = data.log_lines || []
+          if (logs.length) {
+            setLogLines(logs.slice(-200))
           }
-        }
-      },
-      onError: () => !cancelled && setConnectionState('error'),
-      onClose: () => !cancelled && setConnectionState('closed'),
-    })
 
-    wsRef.current = ws
-    ws.addEventListener('open', () => !cancelled && setConnectionState('open'))
+          if (data.status === 'error' && data.error) {
+            setLogLines((prev) => {
+              const line = `ERROR: ${data.error}`
+              return prev.at(-1) === line ? prev : [...prev.slice(-199), line]
+            })
+          }
 
-    return () => {
-      cancelled = true
-      const sock = wsRef.current
-      wsRef.current = null
-      if (!sock) return
-      // If the socket is still CONNECTING (StrictMode double-mount in dev),
-      // schedule the close for when it opens instead of yanking it mid-handshake.
-      if (sock.readyState === WebSocket.CONNECTING) {
-        sock.addEventListener('open', () => sock.close(), { once: true })
-      } else if (sock.readyState === WebSocket.OPEN) {
-        sock.close()
-      }
+          // Update status and results
+          if (
+            ['done', 'partial'].includes(data.status)
+            && !useAppStore.getState().analysisDone
+          ) {
+            const results = data.results || await fetchResults(jobId)
+            finishAnalysis(results, data.status)
+            setReviewItems(results?.review ?? [])
+          }
+        },
+        onError: (error) => {
+          setConnectionState('error')
+          setLogLines((prev) => [
+            ...prev.slice(-199),
+            `Firestore: ${error?.message || 'تعذر الاتصال المباشر — المتابعة الاحتياطية مستمرة'}`,
+          ])
+        },
+      })
+    } catch (error) {
+      queueMicrotask(() => {
+        setConnectionState('error')
+        setLogLines((prev) => [
+          ...prev.slice(-199),
+          `Firestore: ${error?.message || 'تعذر بدء المتابعة المباشرة — المتابعة الاحتياطية مستمرة'}`,
+        ])
+      })
     }
+
+    return () => unsub?.()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [analysisStarted, jobId])
+
+  useEffect(() => {
+    if (!analysisStarted || !jobId || analysisDone) return
+
+    let stopped = false
+    let pollTimer
+
+    const pollJob = async () => {
+      try {
+        const data = await fetchJobStatus(jobId)
+        if (stopped || !data) return
+
+        setConnectionState('open')
+        setAnalysisState(data.status || 'queued', data.error || '')
+
+        Object.entries(data.stages || {}).forEach(([idx, entry]) => {
+          updateStage(Number(idx), {
+            status: entry.status,
+            current: entry.current ?? undefined,
+            total: entry.total ?? undefined,
+            phase: entry.phase ?? undefined,
+          })
+        })
+
+        const logs = data.log_lines || []
+        if (logs.length) {
+          setLogLines(logs.slice(-200))
+        }
+
+        if (
+          ['done', 'partial'].includes(data.status)
+          && !useAppStore.getState().analysisDone
+        ) {
+          const results = data.results || await fetchResults(jobId)
+          finishAnalysis(results, data.status)
+          setReviewItems(results?.review ?? [])
+        }
+
+        if (['done', 'partial', 'error'].includes(data.status) && pollTimer) {
+          window.clearInterval(pollTimer)
+        }
+      } catch (error) {
+        if (!stopped) {
+          setLogLines((prev) => [
+            ...prev.slice(-199),
+            `ERROR: ${error?.message || 'تعذر متابعة حالة التحليل'}`,
+          ])
+        }
+      }
+    }
+
+    pollTimer = window.setInterval(pollJob, 2000)
+    void pollJob()
+
+    return () => {
+      stopped = true
+      window.clearInterval(pollTimer)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [analysisStarted, analysisDone, jobId])
 
   if (!analysisStarted) {
     return (
@@ -78,7 +158,7 @@ export default function ProgressPage() {
     )
   }
 
-  const doneCount = Object.values(stageStatus).filter((s) => s === 'done').length
+  const doneCount = Object.values(stageStatus).filter((s) => ['done', 'skipped'].includes(s)).length
   const totalStages = STAGES.length
   const pct = Math.round((doneCount / totalStages) * 100)
 
@@ -93,6 +173,16 @@ export default function ProgressPage() {
     error:      { label: 'خطأ',     cls: 'bg-danger' },
   }[connectionState] ?? { label: connectionState, cls: 'bg-secondary' }
 
+  const jobState = {
+    partial: { label: 'اكتمل جزئيًا — بعض الخدمات لم تعمل', cls: 'bg-warning text-dark' },
+    uploading: { label: 'جاري رفع الفيديو', cls: 'bg-secondary' },
+    queued: { label: 'في انتظار بدء التحليل', cls: 'bg-info text-dark' },
+    running: { label: 'جاري التحليل', cls: 'bg-warning text-dark' },
+    finalizing: { label: 'جاري رفع وتجهيز النتائج', cls: 'bg-primary' },
+    done: { label: 'اكتمل التحليل', cls: 'bg-success' },
+    error: { label: 'فشل التحليل', cls: 'bg-danger' },
+  }[analysisStatus] ?? { label: analysisStatus, cls: 'bg-secondary' }
+
   return (
     <div>
       <div className="d-flex justify-content-between align-items-center flex-wrap gap-2">
@@ -103,6 +193,22 @@ export default function ProgressPage() {
           <i className="bi bi-broadcast me-1"></i> {conn.label}
         </span>
       </div>
+
+      <div className="mt-3 mb-2">
+        <span className={`badge ${jobState.cls} px-3 py-2`}>
+          {analysisStatus === 'running' && (
+            <span className="spinner-border spinner-border-sm me-2" />
+          )}
+          {jobState.label}
+        </span>
+      </div>
+
+      {analysisError && (
+        <div className="alert alert-danger mt-3" role="alert">
+          <i className="bi bi-exclamation-triangle me-2"></i>
+          <strong>توقف التحليل:</strong> {analysisError}
+        </div>
+      )}
 
       <div className="row g-3 mb-3 mt-1">
         <div className="col-md-4">

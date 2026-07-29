@@ -32,6 +32,8 @@ export const useAppStore = create(
       jobId: null,
       analysisStarted: false,
       analysisDone: false,
+      analysisStatus: 'idle',
+      analysisError: '',
       stageStatus: initialStageStatus(),
       stageProgress: initialStageProgress(),
 
@@ -43,7 +45,14 @@ export const useAppStore = create(
       // setters
       setSettings: (partial) => set(partial),
       setVideo: ({ file, name, sizeMb }) =>
-        set({ videoFile: file, videoName: name, videoSizeMb: sizeMb }),
+        set({
+          videoFile: file,
+          videoName: name,
+          videoSizeMb: sizeMb,
+          uploadProgress: 0,
+          uploadStatus: 'idle',
+          uploadError: '',
+        }),
       clearVideo: () => set({
         videoFile: null, videoName: '', videoSizeMb: 0, videoPath: '',
         uploadProgress: 0, uploadStatus: 'idle', uploadError: '',
@@ -58,16 +67,23 @@ export const useAppStore = create(
           jobId,
           analysisStarted: true,
           analysisDone: false,
+          analysisStatus: 'queued',
+          analysisError: '',
           stageStatus: initialStageStatus(),
           stageProgress: initialStageProgress(),
+          results: null,
+          reviewItems: [],
+          approvedItems: [],
         }),
 
       // Resume an existing backend job into the local store.
-      resumeJob: ({ jobId, status, videoName, streetName, city, district, hasResults }) =>
+      resumeJob: ({ jobId, status, videoName, streetName, city, district }) =>
         set((prev) => ({
           jobId,
           analysisStarted: true,
-          analysisDone: status === 'done',
+          analysisDone: status === 'done' || status === 'partial',
+          analysisStatus: status,
+          analysisError: '',
           videoName: videoName || prev.videoName,
           streetName: streetName || prev.streetName,
           city: city || prev.city,
@@ -79,18 +95,30 @@ export const useAppStore = create(
           results: prev.jobId === jobId ? prev.results : null,
         })),
 
-      updateStage: (idx, { status, current, total } = {}) => {
+      updateStage: (idx, { status, current, total, phase } = {}) => {
         const stageStatus = { ...get().stageStatus }
         const stageProgress = { ...get().stageProgress }
         if (status) stageStatus[idx] = status
-        if (current !== undefined && total !== undefined) {
-          stageProgress[idx] = { current, total }
+        if (
+          current !== undefined
+          || total !== undefined
+          || phase !== undefined
+        ) {
+          const previous = stageProgress[idx] || {}
+          stageProgress[idx] = {
+            current: current ?? previous.current ?? 0,
+            total: total ?? previous.total ?? 0,
+            phase: phase ?? previous.phase,
+          }
         }
         set({ stageStatus, stageProgress })
       },
 
-      finishAnalysis: (results) =>
-        set({ analysisDone: true, results }),
+      setAnalysisState: (status, error = '') =>
+        set({ analysisStatus: status, analysisError: error }),
+
+      finishAnalysis: (results, status = 'done') =>
+        set({ analysisDone: true, analysisStatus: status, analysisError: '', results }),
 
       setReviewItems: (items) => set({ reviewItems: items }),
       approveReviewItem: (id, edited) => {
@@ -115,6 +143,8 @@ export const useAppStore = create(
           jobId: null,
           analysisStarted: false,
           analysisDone: false,
+          analysisStatus: 'idle',
+          analysisError: '',
           stageStatus: initialStageStatus(),
           stageProgress: initialStageProgress(),
           results: null,
@@ -142,6 +172,8 @@ export const useAppStore = create(
         jobId: state.jobId,
         analysisStarted: state.analysisStarted,
         analysisDone: state.analysisDone,
+        analysisStatus: state.analysisStatus,
+        analysisError: state.analysisError,
         stageStatus: state.stageStatus,
         stageProgress: state.stageProgress,
 

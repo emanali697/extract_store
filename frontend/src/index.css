@@ -155,6 +155,11 @@ body {
   background: #FEE2E2;
   border-inline-end-color: var(--brand-danger);
 }
+.stage-row.skipped {
+  background: #F3F4F6;
+  border-inline-end-color: #9CA3AF;
+  opacity: .75;
+}
 
 /* Drop area */
 .dropzone {

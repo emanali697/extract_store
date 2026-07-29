@@ -332,24 +332,29 @@ Manual validation flow:
 
 ## Deployment
 
-A split deployment blueprint is provided:
+The project can be deployed in two ways:
 
+### Firebase Functions (current)
+- **Backend** → Firebase Functions (Python 2nd gen), Cloud Storage, Firestore, Cloud Tasks (primary worker), Pub/Sub (migration compatibility).
+- **Frontend** → Vercel.
+- See `DEPLOY.md` for detailed Firebase setup, environment variables, and deploy commands.
+
+### Legacy Render backend (kept for reference)
 - **Backend** → Render (`render.yaml`).
-- **Frontend** → Vercel (detected automatically from `frontend/`).
+- **Frontend** → Vercel.
 
-See `DEPLOY.md` for detailed Render + Vercel setup, environment variables, and secret files.
-
-If deploying in the future, at minimum you will need to:
-
-- Keep service-account keys out of the repo and mount them as secrets (already gitignored).
-- Decide whether the pipeline (`../pipeline/`) will be bundled or remain a sibling directory.
-- Replace SQLite with a proper database if running multiple backend workers.
+If deploying Firebase Functions, you will need to:
+1. Enable Cloud Functions, Cloud Tasks, Firestore, Storage, and Pub/Sub APIs.
+2. Set environment variables and secrets (`TRADERS_SERVICE_ACCOUNT_JSON`).
+3. Run `firebase deploy --only functions`.
 
 ---
 
 ## Common gotchas
 
 - The backend README still mentions the old path `d:/sharea elnassim/backend`; the project now lives in `d:/sharea elnassim/extract stores/`.
-- The README also says "Pipeline v5 and v6 are not wired yet" and "jobs are stored in memory" — these statements are outdated. v5/v6 are invoked by `runner.py` and jobs are persisted in SQLite.
+- The README also says "Pipeline v5 and v6 are not wired yet" and "jobs are stored in memory" — these statements are outdated. v5/v6 are invoked by `runner.py` and jobs are persisted in SQLite (local) or Firestore (Firebase Functions).
 - `frontend/.env.development` is environment-specific; do not overwrite it with defaults that break another developer's setup.
 - On Windows, always run the backend before the frontend; the frontend needs the API on `:8000`.
+- Firebase Functions do not support WebSockets; progress is streamed via Firestore snapshots.
+- The Cloud Tasks pipeline worker uses 4 GB memory and a 30-minute dispatch deadline. Split videos that cannot complete within that limit or move the worker to a longer-running compute service.

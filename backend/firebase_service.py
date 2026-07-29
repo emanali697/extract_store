@@ -45,12 +45,12 @@ def _ensure_init() -> bool:
         return False
 
     try:
-        if not firebase_admin._apps:
+        try:
+            _app = firebase_admin.get_app()
+        except ValueError:
             cred = credentials.Certificate(str(FIREBASE_KEY_PATH))
             _app = firebase_admin.initialize_app(cred)
-        else:
-            _app = firebase_admin.get_app()
-        _db = firestore.client()
+        _db = firestore.client(_app)
         _log.info("Firebase initialised (project=%s)", _app.project_id)
         return True
     except Exception as e:

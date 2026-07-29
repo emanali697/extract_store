@@ -11,11 +11,12 @@ Two modes:
     push_to_traders(stores) → actually writes to Firestore
 """
 from __future__ import annotations
+import json
 import logging
 from pathlib import Path
 from typing import Any
 
-from config import TRADERS_KEY_PATH, TRADERS_COLLECTION
+from config import TRADERS_KEY_PATH, TRADERS_COLLECTION, TRADERS_PROJECT_ID
 
 _log = logging.getLogger("traders_firebase")
 
@@ -40,13 +41,33 @@ def _ensure_init() -> bool:
         _init_error = f"traders key not found at {TRADERS_KEY_PATH}"
         return False
     try:
+        cred_info = json.loads(TRADERS_KEY_PATH.read_text(encoding="utf-8"))
+        credential_project = cred_info.get("project_id")
+        if credential_project != TRADERS_PROJECT_ID:
+            _init_error = (
+                "traders credentials project mismatch: "
+                f"expected {TRADERS_PROJECT_ID}, got {credential_project or 'missing'}"
+            )
+            return False
+
         # Distinct app name so we don't collide with the existing store-extract app
         existing = {a.name for a in firebase_admin._apps.values()}
         if "traders" not in existing:
-            cred = credentials.Certificate(str(TRADERS_KEY_PATH))
-            _app = firebase_admin.initialize_app(cred, name="traders")
+            cred = credentials.Certificate(cred_info)
+            _app = firebase_admin.initialize_app(
+                cred,
+                {"projectId": TRADERS_PROJECT_ID},
+                name="traders",
+            )
         else:
             _app = firebase_admin.get_app("traders")
+        if _app.project_id != TRADERS_PROJECT_ID:
+            _init_error = (
+                "traders Firebase app project mismatch: "
+                f"expected {TRADERS_PROJECT_ID}, got {_app.project_id}"
+            )
+            _app = None
+            return False
         _db = firestore.client(_app)
         return True
     except Exception as e:

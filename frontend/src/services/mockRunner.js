@@ -4,7 +4,7 @@ const STAGE_TOTALS = [224, 224, 124, 124, 124, 25, 46, 46, 1]
 const STEP_DELAY_MS = 80
 const TICKS_PER_STAGE = 18
 
-export function runMockAnalysis({ onUpdate, onDone, onError } = {}) {
+export function runMockAnalysis({ onUpdate, onDone } = {}) {
   let cancelled = false
   let stage = 0
 

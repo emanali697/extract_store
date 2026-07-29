@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+pipeline/pipeline_log*.txt
+*$py.class
+*.so
+.env
+.venv
+venv/
+env/
+.venv/
+.pytest_cache/
+*.log
+.DS_Store

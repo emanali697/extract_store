@@ -1,19 +1,30 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useAppStore } from '../store/appStore'
+import { getSignImageUrl } from '../services/api'
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
-
-function ReviewCard({ item, onApprove, onReject }) {
+function ReviewCard({ item, jobId, onApprove, onReject }) {
   const [name, setName] = useState(item.multimodalName || item.suggestedName)
   const [category, setCategory] = useState(item.category)
   const [phone, setPhone] = useState(item.phone || '')
+  const [signSrc, setSignSrc] = useState(
+    item.signImageUrl?.startsWith('http') ? item.signImageUrl : null
+  )
 
   const confPct = Math.round((item.confidence ?? 0) * 100)
   const confClass = confPct >= 70 ? 'success' : confPct >= 50 ? 'warning' : 'danger'
 
-  const signSrc = item.signImageUrl
-    ? (item.signImageUrl.startsWith('http') ? item.signImageUrl : `${API_BASE}${item.signImageUrl}`)
-    : null
+  useEffect(() => {
+    if (signSrc || !jobId) return
+    const filename = item.signImageFilename || item.signImageUrl?.split('/').pop()
+    if (!filename) return
+
+    let active = true
+    getSignImageUrl(jobId, filename)
+      .then((url) => active && setSignSrc(url))
+      .catch(() => {/* Keep the image placeholder when no crop is available. */})
+
+    return () => { active = false }
+  }, [item.signImageFilename, item.signImageUrl, jobId, signSrc])
 
   return (
     <div className="review-card">
@@ -117,7 +128,7 @@ function ReviewCard({ item, onApprove, onReject }) {
 
 export default function ReviewPage() {
   const {
-    analysisDone, reviewItems, approvedItems, results,
+    jobId, analysisDone, reviewItems, approvedItems, results,
     approveReviewItem, rejectReviewItem,
   } = useAppStore()
 
@@ -190,6 +201,7 @@ export default function ReviewPage() {
             <ReviewCard
               key={item.id}
               item={item}
+              jobId={jobId}
               onApprove={(edited) => approveReviewItem(item.id, edited)}
               onReject={rejectReviewItem}
             />

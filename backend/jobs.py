@@ -1,6 +1,7 @@
 """In-memory job manager + SQLite persistence + WebSocket fan-out."""
 from __future__ import annotations
 import asyncio
+import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Any
@@ -27,6 +28,7 @@ class Job:
     stages: dict[int, dict] = field(default_factory=dict)
     log_lines: list[str] = field(default_factory=list)
     results: dict | None = None
+    created_at: float = field(default_factory=time.time)
 
 
 def _job_from_row(d: dict) -> Job:
@@ -44,6 +46,7 @@ def _job_from_row(d: dict) -> Job:
         output_dir=d["output_dir"] or "",
         stages=d.get("stages") or {},
         results=d.get("results"),
+        created_at=float(d.get("created_at") or time.time()),
     )
 
 
@@ -84,6 +87,7 @@ class JobManager:
             enable_status=settings.get("enableStatus", True),
             start_seconds=settings.get("startSeconds", 0),
             output_dir=str(out_dir),
+            created_at=time.time(),
         )
         self._jobs[job_id] = job
         db.upsert_job(job)

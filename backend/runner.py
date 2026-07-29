@@ -18,7 +18,7 @@ from pathlib import Path
 
 from config import PIPELINE_MAIN, PIPELINE_DIR, PIPELINE_PYTHON
 from jobs import Job, manager
-from stages import parse_stage_line, parse_progress_hint
+from stages import parse_progress_hint, parse_stage_marker
 
 PIPELINE_MAIN_V5 = PIPELINE_DIR / "main_v5.py"
 PIPELINE_RUN_V6 = PIPELINE_DIR / "run_v6.py"
@@ -30,13 +30,16 @@ async def _emit(job: Job, event: dict) -> None:
 
 
 async def _mark_stage(job: Job, ui_idx: int, status: str,
-                      current: int | None = None, total: int | None = None) -> None:
+                      current: int | None = None, total: int | None = None,
+                      phase: str | None = None) -> None:
     entry = job.stages.get(ui_idx, {})
     entry["status"] = status
     if current is not None:
         entry["current"] = current
     if total is not None:
         entry["total"] = total
+    if phase:
+        entry["phase"] = phase
     job.stages[ui_idx] = entry
     manager.persist(job)
     await _emit(job, {
@@ -45,6 +48,7 @@ async def _mark_stage(job: Job, ui_idx: int, status: str,
         "status": status,
         "current": entry.get("current"),
         "total": entry.get("total"),
+        "phase": entry.get("phase"),
     })
 
 
@@ -271,6 +275,7 @@ async def _run_subprocess(job: Job, cmd: list[str]) -> tuple[int, int | None]:
     thread.start()
 
     current_ui_stage: int | None = None
+    current_phase: str | None = None
 
     while True:
         line = await asyncio.to_thread(_get_line, stdout_q)
@@ -285,19 +290,29 @@ async def _run_subprocess(job: Job, cmd: list[str]) -> tuple[int, int | None]:
         job.log_lines.append(line)
         await _emit(job, {"type": "log", "line": line})
 
-        new_stage = parse_stage_line(line)
-        if new_stage is not None:
+        marker = parse_stage_marker(line)
+        if marker is not None:
+            new_stage, new_phase = marker
             if current_ui_stage is not None and current_ui_stage != new_stage:
-                await _mark_stage(job, current_ui_stage, "done")
+                await _mark_stage(
+                    job, current_ui_stage, "done", phase=current_phase
+                )
             current_ui_stage = new_stage
-            await _mark_stage(job, new_stage, "active", current=0, total=0)
+            current_phase = new_phase
+            await _mark_stage(
+                job, new_stage, "active", current=0, total=0,
+                phase=current_phase,
+            )
             continue
 
         if current_ui_stage is not None:
             hint = parse_progress_hint(line)
             if hint:
                 cur, tot = hint
-                await _mark_stage(job, current_ui_stage, "active", current=cur, total=tot)
+                await _mark_stage(
+                    job, current_ui_stage, "active", current=cur, total=tot,
+                    phase=current_phase,
+                )
 
     rc = result_q.get() if not result_q.empty() else 0
     thread.join(timeout=5.0)
@@ -379,8 +394,17 @@ async def run_pipeline(job: Job) -> None:
         if job.stages.get(i, {}).get("status") not in ("done", "error"):
             await _mark_stage(job, i, "done")
 
-    job.status = "done"
     job.results = await _read_results(job)
+    if job.results.get("summary", {}).get("total", 0) == 0:
+        job.status = "partial"
+        warning = (
+            "اكتمل خط التحليل بدون استخراج متاجر. "
+            "راجع سجل OCR والفلترة قبل اعتماد النتيجة."
+        )
+        job.results.setdefault("warnings", []).append(warning)
+        job.log_lines.append(f"WARNING: {warning}")
+    else:
+        job.status = "done"
     manager.persist(job)
-    await _emit(job, {"type": "status", "status": "done"})
+    await _emit(job, {"type": "status", "status": job.status})
     await _emit(job, {"type": "results", "results": job.results})
