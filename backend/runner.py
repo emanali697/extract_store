@@ -383,7 +383,8 @@ async def run_pipeline(job: Job) -> None:
     # ---------- v6 (optional, needs v5 output) ----------
     v6_ok = False
     v5_json = Path(job.output_dir) / "stores_v5_raw.json"
-    if PIPELINE_RUN_V6.exists() and v5_json.exists():
+    raw_json = Path(job.output_dir) / "stores_raw.json"
+    if PIPELINE_RUN_V6.exists() and (v5_json.exists() or raw_json.exists()):
         await _emit(job, {"type": "log", "line": "--- STAGE 12: v6 orchestrator ---"})
         cmd_v6 = [str(PIPELINE_PYTHON), str(PIPELINE_RUN_V6), job.output_dir]
         if not job.enable_status:
@@ -395,11 +396,22 @@ async def run_pipeline(job: Job) -> None:
             await _mark_stage(job, 8, "done")
         else:
             await _mark_stage(job, 7, "error")
-            job.log_lines.append(f"⚠️ v6 returned {rc6}, falling back to v5 results")
+            await _mark_stage(job, 8, "error")
+            job.log_lines.append(f"❌ Final visual verification failed with code {rc6}")
             await _emit(job, {
                 "type": "log",
-                "line": f"⚠️ v6 returned {rc6}, falling back to v5 results",
+                "line": f"❌ Final visual verification failed with code {rc6}",
             })
+            job.status = "error"
+            job.error = (
+                "فشل التحقق البصري النهائي عبر Gemini؛ لم يتم نشر نتائج ناقصة. "
+                "أعد المحاولة عند استقرار خدمات Google."
+            )
+            manager.persist(job)
+            await _emit(job, {
+                "type": "status", "status": "error", "error": job.error,
+            })
+            return
     elif v5_ok:
         await _mark_stage(job, 7, "done")
 

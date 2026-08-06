@@ -5,6 +5,7 @@ import io
 import json
 import re
 import time
+from collections import Counter
 from pathlib import Path
 
 from PIL import Image, ImageEnhance, ImageFilter
@@ -92,6 +93,7 @@ Never output vehicle advertisements, road signs, billboards, or brand text unrel
 For every visible store:
 - Transcribe the Arabic name exactly as the sign shows it; do not translate, autocorrect, or complete missing letters.
 - Transcribe a phone only when its digits are visibly readable. Never guess a missing digit.
+- Never emit example or placeholder phones such as 0500000000 or 0555555555.
 - Use several adjacent images as supporting evidence when they show the same storefront.
 - Put all supporting frame numbers in evidence_frames.
 - raw_visible_text must contain only text actually visible on the sign.
@@ -105,7 +107,7 @@ def _image_bytes(path: str) -> bytes:
     """Prepare a sharp, bounded JPEG for fast multimodal requests."""
     with Image.open(path) as image:
         image = image.convert("RGB")
-        max_width = 1800
+        max_width = 3000
         if image.width > max_width:
             height = max(1, round(image.height * max_width / image.width))
             image = image.resize((max_width, height), Image.Resampling.LANCZOS)
@@ -232,6 +234,32 @@ def _frame_numbers(value):
     return out
 
 
+def sanitize_phone_field(phone, raw_visible_text=""):
+    """Keep only plausible digit strings explicitly present in visible text."""
+    arabic_digits = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
+    raw_normalized = str(raw_visible_text or "").translate(arabic_digits)
+    raw_digits = re.sub(r"\D", "", raw_normalized)
+    clean = []
+    for part in re.split(r"[,،;|/]", str(phone or "")):
+        digits = re.sub(r"\D", "", part.translate(arabic_digits))
+        if not 7 <= len(digits) <= 15:
+            continue
+        counts = Counter(digits)
+        if counts and counts.most_common(1)[0][1] >= len(digits) - 2:
+            continue
+        ascending = "01234567890123456789"
+        descending = "98765432109876543210"
+        if any(digits[index:index + 6] in ascending or
+               digits[index:index + 6] in descending
+               for index in range(max(0, len(digits) - 5))):
+            continue
+        if not raw_digits or digits not in raw_digits:
+            continue
+        if digits not in clean:
+            clean.append(digits)
+    return ", ".join(clean)
+
+
 def run_analysis(processed_frames, _legacy_ocr_texts, gps_data, log_fn=print):
     """Read signs directly from images, attach evidence, then deduplicate."""
     items = []
@@ -283,6 +311,7 @@ def run_analysis(processed_frames, _legacy_ocr_texts, gps_data, log_fn=print):
             store["lng"] = best.get("lng")
             store["ocr_text"] = (store.get("raw_visible_text") or "").strip()
             store["raw_text"] = store["ocr_text"]
+            store["phone"] = sanitize_phone_field(store.get("phone"), store["ocr_text"])
             store["visual_evidence"] = {
                 "verified": True,
                 "frames": evidence_frames,
@@ -296,6 +325,7 @@ def run_analysis(processed_frames, _legacy_ocr_texts, gps_data, log_fn=print):
                 "raw_text": store["ocr_text"],
                 "image_clarity": float(store.get("confidence", 0) or 0),
                 "sign_image": Path(best["sign_path"]).name,
+                "reused_visual_read": True,
             }
             store["source_visible_in_video"] = True
             store["name_source"] = "gemini_visual"

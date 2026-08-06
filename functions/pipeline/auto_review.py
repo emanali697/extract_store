@@ -30,6 +30,7 @@ from __future__ import annotations
 import json
 import re
 import time
+from difflib import SequenceMatcher
 from typing import Iterable
 
 from pathlib import Path
@@ -54,8 +55,8 @@ GEMINI_RETRIES = 2
 
 # Multimodal verification settings
 MULTIMODAL_ENABLED = True
-MULTIMODAL_RETRIES = 2
-MULTIMODAL_DELAY = 0.3
+MULTIMODAL_RETRIES = 4
+MULTIMODAL_DELAY = 2.0
 
 
 # ----------  Phone cleanup  ----------
@@ -86,6 +87,15 @@ def clean_store_phones(store, extra_text=""):
     clean = []
     seen = set()
     for digits in pool:
+        digit_counts = {digit: digits.count(digit) for digit in set(digits)}
+        if digit_counts and max(digit_counts.values()) >= len(digits) - 2:
+            continue
+        ascending = "01234567890123456789"
+        descending = "98765432109876543210"
+        if any(digits[index:index + 6] in ascending or
+               digits[index:index + 6] in descending
+               for index in range(max(0, len(digits) - 5))):
+            continue
         formatted, _kind = classify_phone(digits)
         if formatted and formatted not in seen:
             seen.add(formatted)
@@ -216,35 +226,82 @@ def _pick_sign_image(store, signs_dir: Path):
     return None
 
 
-MM_PROMPT = """دي صورة لافتة محل في شارع سعودي مأخوذة من كاميرا داش كام.
+MM_PROMPT = """Verify one candidate storefront using the supplied adjacent dashcam images.
+The candidate from the first visual pass is: {target!r}.
 
-استخرج المعلومات الواضحة في الصورة فقط:
-- name: اسم المحل بالعربي (لو ظاهر، وإلا "")
-- phone: رقم الهاتف (10 أرقام تبدأ بـ 05 للجوال، أو "")
-- category: التصنيف (مطعم/بقالة/صيدلية/مغسلة/إلخ، أو "")
-- raw_text: النص الكامل اللي تشوفه على اللافتة كله سواء واضح أو لأ
-- image_clarity: عدد بين 0.0 و 1.0
-
-أرجع كائن JSON واحد فقط، بدون أي شرح أو markdown."""
+Rules:
+- visible is true only if this exact candidate storefront/sign is present in the images.
+- same_store is true only if the images support that the candidate and exact_name are the same business.
+- Each image may contain several neighboring storefronts. Attribute text and phone numbers only to the
+  physical sign/facade carrying exact_name; never copy a number from a nearby business.
+- exact_name must copy the sign exactly. Do not autocorrect or complete hidden letters.
+- If the candidate contains missing/uncertain letters, keep exact_name empty unless every added letter is legible.
+- phone must contain only complete digits clearly visible on this storefront. Never guess digits.
+- Never emit placeholders such as 0500000000 or 0555555555.
+- entity_type must be one of: store, service_business, institution, advertisement, unknown.
+- Schools, government buildings, and unrelated advertisements are not stores.
+- raw_text must include only text visibly belonging to this candidate.
+- Keep raw_text under 250 characters and reason under 160 characters.
+- image_clarity is 0..1 for exact name/phone readability, not business-name plausibility.
+"""
 
 
 # Schema we'll pin Gemini to — guarantees parseable JSON.
 MM_SCHEMA = {
     "type": "OBJECT",
     "properties": {
-        "name": {"type": "STRING"},
+        "visible": {"type": "BOOLEAN"},
+        "same_store": {"type": "BOOLEAN"},
+        "exact_name": {"type": "STRING"},
         "phone": {"type": "STRING"},
         "category": {"type": "STRING"},
         "raw_text": {"type": "STRING"},
         "image_clarity": {"type": "NUMBER"},
+        "entity_type": {"type": "STRING"},
+        "reason": {"type": "STRING"},
     },
-    "required": ["name", "phone", "category", "raw_text", "image_clarity"],
+    "required": [
+        "visible", "same_store", "exact_name", "phone", "category",
+        "raw_text", "image_clarity", "entity_type", "reason",
+    ],
 }
 
 
-def _multimodal_one(sign_path: Path, log_fn):
-    """Single multimodal call for one sign image. Uses JSON response mode."""
-    from analyzer import get_client
+def _candidate_sign_images(store, signs_dir: Path):
+    names = list((store.get("visual_evidence") or {}).get("sign_images") or [])
+    paths = []
+    for name in names:
+        safe_name = Path(name).name
+        if not safe_name.startswith("sign_"):
+            continue
+        path = signs_dir / safe_name
+        if path.is_file() and path not in paths:
+            paths.append(path)
+    if not paths:
+        fallback = _pick_sign_image(store, signs_dir)
+        return [fallback] if fallback else []
+
+    # The first visual pass records its strongest frame. Prefer that frame and
+    # its nearest neighbors. Evenly spaced frames can cross into the next shop
+    # as the dashcam moves, which can assign a neighboring phone to this store.
+    primary_name = Path((store.get("multimodal") or {}).get("sign_image") or "").name
+    primary = signs_dir / primary_name if primary_name.startswith("sign_") else None
+    if primary not in paths:
+        primary = paths[0]
+
+    def _frame_number(path):
+        match = re.search(r"(\d+)", path.stem)
+        return int(match.group(1)) if match else 0
+
+    primary_number = _frame_number(primary)
+    ordered = sorted(paths, key=lambda path: (abs(_frame_number(path) - primary_number),
+                                               _frame_number(path)))
+    return ordered[:3]
+
+
+def _multimodal_one(store, sign_paths, log_fn):
+    """Targeted independent verification using up to three evidence images."""
+    from analyzer import _image_bytes, get_client
     from config import GEMINI_MODEL
 
     try:
@@ -252,26 +309,28 @@ def _multimodal_one(sign_path: Path, log_fn):
     except ImportError:
         return None
 
-    try:
-        # نفس حل الـ OCR: نصغّر اللوحات الضخمة (8K ≈ 12MB) قبل ما نبعتها لـ Gemini.
-        # من غير كده كل صورة بتاخد ~80 ثانية بدل ~5.
-        from ocr import _read_content_downscaled
-        img_bytes = _read_content_downscaled(str(sign_path))
-    except Exception as e:
-        try:
-            img_bytes = sign_path.read_bytes()
-        except Exception as e2:
-            log_fn(f"  mm: read failed for {sign_path.name}: {e2}")
-            return None
-
     client = get_client()
-    image_part = _types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg")
+    target = (
+        store.get("name_ar") or store.get("name_en")
+        or store.get("raw_visible_text") or store.get("raw_text") or ""
+    ).strip()
+    parts = [_types.Part.from_text(text=MM_PROMPT.format(target=target))]
+    for index, sign_path in enumerate(sign_paths, 1):
+        try:
+            img_bytes = _image_bytes(str(sign_path))
+        except Exception as error:
+            log_fn(f"  mm: read failed for {sign_path.name}: {error}")
+            continue
+        parts.append(_types.Part.from_text(text=f"Evidence image {index}: {sign_path.name}"))
+        parts.append(_types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"))
+    if len(parts) == 1:
+        return None
 
     cfg = {
         "temperature": 0.0,
         # Larger budget — Arabic raw_text can be long and getting truncated
         # mid-string was the source of every "Unterminated string" parse error.
-        "max_output_tokens": 2048,
+        "max_output_tokens": 4096,
         "response_mime_type": "application/json",
         "response_schema": MM_SCHEMA,
     }
@@ -280,7 +339,7 @@ def _multimodal_one(sign_path: Path, log_fn):
         try:
             resp = client.models.generate_content(
                 model=GEMINI_MODEL,
-                contents=[image_part, MM_PROMPT],
+                contents=[_types.Content(role="user", parts=parts)],
                 config=cfg,
             )
             text = (resp.text or "").strip()
@@ -307,7 +366,7 @@ def _multimodal_one(sign_path: Path, log_fn):
 
 
 def multimodal_verify(stores, signs_dir: Path, log_fn=print):
-    """Run multimodal Gemini for each store with a sign image; attach to store."""
+    """Independently verify every candidate and apply strict visual fields."""
     if not MULTIMODAL_ENABLED:
         return
 
@@ -319,31 +378,93 @@ def multimodal_verify(stores, signs_dir: Path, log_fn=print):
 
     for s in stores:
         done += 1
-        # v3 now reads every storefront directly with Gemini and preserves the
-        # exact visual result. Do not pay for (or risk conflicting with) a
-        # second read of the same sign during Tier-3 review.
+        name = (s.get("name_ar") or s.get("name_en") or "").strip()
+        category = (s.get("category") or "").strip().lower()
+        institution_markers = (
+            "مدرسة", "المدرسة", "جامعة", "كلية",
+            "school", "university", "college",
+        )
+        if category in {"school", "kindergarten", "university", "college"} or any(
+            marker in name.lower() for marker in institution_markers
+        ):
+            s["excluded_from_results"] = True
+            s["exclusion_reason"] = "جهة تعليمية وليست متجرًا"
+            emit_progress(done, total, log_fn=log_fn)
+            continue
         existing = s.get("multimodal") or {}
-        if existing.get("name") and existing.get("sign_image"):
+        if existing.get("verification_pass"):
             matched += 1
             emit_progress(done, total, log_fn=log_fn)
             continue
-        sign_path = _pick_sign_image(s, signs_dir)
-        if not sign_path:
-            emit_progress(done, total, log_fn=log_fn)
-            continue
+        sign_paths = _candidate_sign_images(s, signs_dir)
+        if not sign_paths:
+            raise RuntimeError(
+                "Independent visual verification cannot run because no sign "
+                f"evidence image exists for '{name or 'unknown'}'."
+            )
 
-        result = _multimodal_one(sign_path, log_fn=log_fn)
+        result = _multimodal_one(s, sign_paths, log_fn=log_fn)
+        if not result:
+            raise RuntimeError(
+                "Gemini independent visual verification failed for "
+                f"'{s.get('name_ar') or s.get('name_en') or 'unknown'}' after "
+                f"{MULTIMODAL_RETRIES} attempts. No final results were produced."
+            )
+
         if result:
+            from analyzer import sanitize_phone_field
+
+            initial_name = (
+                s.get("name_ar") or s.get("name_en")
+                or s.get("raw_visible_text") or s.get("raw_text") or ""
+            ).strip()
+            raw_text = (result.get("raw_text") or "").strip()
+            exact_name = (result.get("exact_name") or "").strip()
+            clarity = float(result.get("image_clarity", 0) or 0)
+            phone = sanitize_phone_field(result.get("phone"), raw_text)
+            entity_type = (result.get("entity_type") or "unknown").strip()
             s["multimodal"] = {
-                "name": (result.get("name") or "").strip(),
-                "phone": (result.get("phone") or "").strip(),
+                "name": exact_name,
+                "phone": phone,
                 "category": (result.get("category") or "").strip(),
-                "raw_text": (result.get("raw_text") or "").strip(),
-                "image_clarity": float(result.get("image_clarity", 0.5) or 0.5),
-                "sign_image": sign_path.name,
+                "raw_text": raw_text,
+                "image_clarity": clarity,
+                "sign_image": sign_paths[0].name,
+                "verification_pass": True,
+                "visible": bool(result.get("visible")),
+                "same_store": bool(result.get("same_store")),
+                "entity_type": entity_type,
+                "reason": (result.get("reason") or "").strip(),
+                "initial_name": initial_name,
             }
-            if s["multimodal"]["name"]:
-                matched += 1
+            visual = dict(s.get("visual_evidence") or {})
+            visual["independent_verification"] = s["multimodal"]
+            s["visual_evidence"] = visual
+
+            if not result.get("visible") or not result.get("same_store"):
+                s["excluded_from_results"] = True
+                s["exclusion_reason"] = "لم يتأكد ظهور المتجر في صور الدليل"
+            elif entity_type in {"institution", "advertisement"}:
+                s["excluded_from_results"] = True
+                s["exclusion_reason"] = f"نوع المنشأة غير تجاري: {entity_type}"
+            else:
+                if exact_name:
+                    s["name_ar"] = exact_name
+                    if not any("\u0600" <= char <= "\u06ff" for char in exact_name):
+                        s["name_en"] = exact_name
+                s["phone"] = phone
+                s["phone_source"] = "gemini_visual_verified" if phone else "not_visible"
+                if s["multimodal"]["category"]:
+                    s["category"] = s["multimodal"]["category"]
+                s["confidence"] = clarity
+                if clarity < 0.85 or not exact_name or entity_type == "unknown":
+                    s["needs_review"] = True
+                    flags = list(s.get("review_flags") or [])
+                    if "التحقق البصري المستقل يحتاج مراجعة" not in flags:
+                        flags.append("التحقق البصري المستقل يحتاج مراجعة")
+                    s["review_flags"] = flags
+                else:
+                    matched += 1
 
         emit_progress(done, total, log_fn=log_fn)
         if done % 5 == 0 or done == total:
@@ -375,7 +496,14 @@ def _names_agree(a, b):
     if not wa or not wb:
         return False
     overlap = len(wa & wb) / max(len(wa | wb), 1)
-    return overlap >= 0.5
+    char_ratio = SequenceMatcher(None, na, nb).ratio()
+    return overlap >= 0.5 or char_ratio >= 0.78
+
+
+def _name_is_incomplete(name):
+    normalized = (name or "").strip().lower()
+    markers = ("...", "…", "غير واضح", "unknown", "unclear")
+    return not normalized or any(marker in normalized for marker in markers)
 
 
 # ----------  Final decision  ----------
@@ -388,13 +516,43 @@ def _decide(store):
     name = (store.get("name_ar") or "").strip()
     mm = store.get("multimodal") or {}
     mm_name = (mm.get("name") or "").strip()
-    mm_phone = (mm.get("phone") or "").strip()
+    initial_name = (mm.get("initial_name") or name).strip()
+
+    if store.get("excluded_from_results"):
+        return "auto_rejected", 0.0, store.get("exclusion_reason") or "مستبعد بصريًا", phones
 
     if not name and not mm_name:
         return "auto_rejected", conf, "اسم فاضي حتى في الصورة", phones
 
     multi_word = len(name.split()) >= 2
-    mm_agrees = mm_name and _names_agree(name, mm_name)
+    mm_agrees = bool(mm_name and _names_agree(initial_name, mm_name))
+
+    if mm.get("verification_pass"):
+        visual_conf = float(mm.get("image_clarity", 0) or 0)
+        if not mm.get("visible") or not mm.get("same_store"):
+            return "auto_rejected", 0.0, "لم يتأكد ظهور المتجر في صور الدليل", phones
+        initial_words = _normalize_for_compare(initial_name).split()
+        mixed_scripts = (
+            bool(re.search(r"[\u0600-\u06ff]", mm_name or initial_name))
+            and bool(re.search(r"[A-Za-z]", mm_name or initial_name))
+        )
+        weak_single_word = (
+            len(initial_words) == 1
+            and len(initial_words[0]) <= 5
+            and not phones
+        )
+        if mixed_scripts:
+            return "needs_human", min(visual_conf, conf), \
+                "الاسم يجمع حروفًا عربية ولاتينية وقد يحتوي حروفًا متشابهة؛ يحتاج مراجعة بشرية", phones
+        if _name_is_incomplete(initial_name) or weak_single_word:
+            return "needs_human", min(visual_conf, conf), \
+                "القراءة الأولى ناقصة أو اسم عام قصير ويحتاج تأكيدًا بشريًا", phones
+        if visual_conf >= 0.90 and conf >= 0.85 and mm_agrees:
+            final_conf = min(visual_conf, conf)
+            return "auto_passed", final_conf, \
+                f"قراءتان بصريتان متفقتان على '{mm_name}'", phones
+        return "needs_human", min(visual_conf, conf), \
+            mm.get("reason") or "الاسم أو الهاتف يحتاج مراجعة بشرية", phones
 
     # === STRONGEST: multimodal independently confirms the same name ===
     if mm_agrees:
@@ -442,7 +600,11 @@ def auto_review(stores, log_fn=print, signs_dir=None):
     `signs_dir` is the folder containing sign_NNNN.jpg files; if None, the
     multimodal pass is skipped.
     """
-    tier3 = [s for s in stores if (s.get("status_check") or {}).get("tier") == 3]
+    tier3 = [
+        s for s in stores
+        if (s.get("status_check") or {}).get("tier") == 3
+        and not s.get("excluded_from_results")
+    ]
     if not tier3:
         log_fn("auto_review: لا توجد متاجر Tier 3")
         return stores

@@ -27,7 +27,6 @@ if GCP_CREDENTIALS and os.path.exists(GCP_CREDENTIALS):
 from extractor import extract_frames_pass1, filter_frames_by_speed, process_selected_frames
 from ocr import read_gps_from_images
 from analyzer import run_analysis
-from places import enrich_stores
 from exporter import export_excel
 
 
@@ -145,14 +144,12 @@ def main():
             args.skip_places = True
 
     # === Stage 8: Places enrichment ===
-    # Wrapped: a network failure here must NOT crash the whole run and lose the
-    # OCR + Gemini work. If Places fails we keep the dashcam-GPS location instead.
+    # The strict v5 matcher runs immediately after this stage. Do not run the
+    # legacy broad-radius matcher here: it adds cost and can attach unrelated
+    # nearby businesses to an otherwise valid visual candidate.
     if not args.skip_places and center_lat and center_lng:
         log(f"\n--- STAGE 8: Places API enrichment ---")
-        try:
-            stores = enrich_stores(stores, center_lat, center_lng, log_fn=log)
-        except Exception as e:
-            log(f"⚠️ Places فشلت ({str(e)[:160]}) — هنكمّل بموقع الداش كام بدل ما نخسر الشغل")
+        log("Places matching deferred to the strict v5 name/distance matcher")
 
     # === Stage 9: Save raw JSON (for further processing) ===
     json_path = os.path.join(output_dir, "stores_raw.json")

@@ -263,6 +263,11 @@ def _merge_group(group):
     return merged
 
 
+def merge_group(group):
+    """Public compatibility wrapper used by the legacy v6 finalizer."""
+    return _merge_group(group)
+
+
 def dedupe_stores(stores, log_fn=print):
     count = len(stores)
     parent = list(range(count))
