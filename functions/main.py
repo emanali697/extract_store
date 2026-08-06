@@ -39,11 +39,13 @@ from db import (
     job_to_dict,
 )
 from storage import (
+    compose_video_parts,
+    delete,
+    delete_prefix,
     download_file,
     exists,
     job_output_prefix,
     signed_url,
-    upload_dir,
     upload_file,
     video_path,
 )
@@ -196,6 +198,70 @@ def start_job(req: https_fn.Request) -> https_fn.Response:
         return _error_response(job.error, status=503, origin=origin)
 
     return _json_response({"jobId": job_id, "status": "queued"}, origin=origin)
+
+
+@https_fn.on_request()
+def complete_upload(req: https_fn.Request) -> https_fn.Response:
+    """Compose parallel browser chunks into the single pipeline input video."""
+    origin = _get_origin(req)
+    if req.method == "OPTIONS":
+        return _json_response({}, origin=origin)
+    if req.method != "POST":
+        return _error_response("method not allowed", status=405, origin=origin)
+
+    payload = _get_json(req)
+    job_id = str(payload.get("jobId") or "").strip()
+    try:
+        part_count = int(payload.get("partCount"))
+    except (TypeError, ValueError):
+        return _error_response("partCount must be an integer", origin=origin)
+    if not job_id:
+        return _error_response("jobId is required", origin=origin)
+
+    job = get_job(job_id)
+    if not job:
+        return _error_response("job not found", status=404, origin=origin)
+    if job.status != "uploading":
+        return _error_response("job is not accepting uploads", status=409, origin=origin)
+
+    try:
+        storage_path, total_size = compose_video_parts(job_id, part_count)
+    except FileNotFoundError as exc:
+        return _error_response(str(exc), status=409, origin=origin)
+    except FileExistsError as exc:
+        return _error_response(str(exc), status=409, origin=origin)
+    except ValueError as exc:
+        return _error_response(str(exc), origin=origin)
+    except Exception as exc:
+        return _error_response(f"failed to finalize upload: {exc}", status=500, origin=origin)
+
+    return _json_response({
+        "path": storage_path,
+        "size": total_size,
+        "partCount": part_count,
+    }, origin=origin)
+
+
+@https_fn.on_request()
+def abort_upload(req: https_fn.Request) -> https_fn.Response:
+    """Remove completed chunks left by a failed/cancelled browser upload."""
+    origin = _get_origin(req)
+    if req.method == "OPTIONS":
+        return _json_response({}, origin=origin)
+    if req.method != "POST":
+        return _error_response("method not allowed", status=405, origin=origin)
+    job_id = str(_get_json(req).get("jobId") or "").strip()
+    job = get_job(job_id) if job_id else None
+    if not job:
+        return _error_response("job not found", status=404, origin=origin)
+    if job.status != "uploading":
+        return _error_response("job is not accepting uploads", status=409, origin=origin)
+    try:
+        delete_prefix(f"jobs/{job_id}/upload_parts/")
+        delete(video_path(job_id))
+        return _json_response({"deleted": True}, origin=origin)
+    except Exception as exc:
+        return _error_response(f"failed to clean upload: {exc}", status=500, origin=origin)
 
 
 @https_fn.on_request()
@@ -404,8 +470,9 @@ def delete_video(req: https_fn.Request) -> https_fn.Response:
         return _error_response("job not found", status=404, origin=origin)
 
     try:
-        from storage import delete
         delete(job.video_storage_path)
+        job.video_storage_path = ""
+        persist_job(job)
         return _json_response({"deleted": True}, origin=origin)
     except Exception as e:
         return _error_response(str(e), status=500, origin=origin)
@@ -440,6 +507,41 @@ def health(req: https_fn.Request) -> https_fn.Response:
 # ---------------------------------------------------------------------------
 
 
+def _upload_retained_outputs(job: Job, output_dir: Path) -> None:
+    """Keep final data and human-review evidence, never raw video/frames."""
+    retained_names = {
+        "stores_raw.json",
+        "stores_v5_raw.json",
+        "stores_v6_final.json",
+        "stores_final.xlsx",
+        "stores_v5_final.xlsx",
+        "stores_v6_final.xlsx",
+    }
+    prefix = job_output_prefix(job.job_id)
+    for filename in retained_names:
+        local_path = output_dir / filename
+        if local_path.is_file():
+            content_type = (
+                "application/json" if local_path.suffix == ".json"
+                else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+            upload_file(local_path, f"{prefix}{filename}", content_type=content_type)
+
+    review_items = (job.results or {}).get("review") or []
+    review_filenames = {
+        str(item.get("signImageFilename") or "")
+        for item in review_items
+        if item.get("signImageFilename")
+    }
+    for filename in review_filenames:
+        safe_name = Path(filename).name
+        if not safe_name.startswith("sign_"):
+            continue
+        local_path = output_dir / "signs" / safe_name
+        if local_path.is_file():
+            upload_file(local_path, f"{prefix}signs/{safe_name}", content_type="image/jpeg")
+
+
 def _execute_pipeline_job(job_id: str) -> None:
     """Claim and execute one queued job, persisting progress and outputs."""
     job = claim_queued_job(job_id)
@@ -456,6 +558,7 @@ def _execute_pipeline_job(job_id: str) -> None:
     output_dir = tmp_dir / "outputs"
     output_dir.mkdir(parents=True, exist_ok=True)
     outputs_uploaded = False
+    source_storage_path = job.video_storage_path
 
     try:
         download_file(job.video_storage_path, video_local)
@@ -468,7 +571,7 @@ def _execute_pipeline_job(job_id: str) -> None:
         if job.status == "error":
             return
 
-        upload_dir(output_dir, job_output_prefix(job_id))
+        _upload_retained_outputs(job, output_dir)
         outputs_uploaded = True
         job.status = "partial" if job.results and job.results.get("warnings") else "done"
         job.error = None
@@ -481,9 +584,21 @@ def _execute_pipeline_job(job_id: str) -> None:
     finally:
         if not outputs_uploaded and output_dir.exists():
             try:
-                upload_dir(output_dir, job_output_prefix(job_id))
+                _upload_retained_outputs(job, output_dir)
             except Exception:
                 pass
+        # The upload is temporary input. Remove it after every completed worker
+        # attempt (success or failure) so videos are not retained in Storage.
+        try:
+            if source_storage_path:
+                delete(source_storage_path)
+            job.video_storage_path = ""
+            persist_job(job)
+        except Exception as cleanup_error:
+            job.log_lines.append(
+                f"WARNING: temporary video cleanup failed: {cleanup_error}"
+            )
+            persist_job(job)
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
@@ -543,6 +658,6 @@ def root(req: https_fn.Request) -> https_fn.Response:
         return _json_response({}, origin=origin)
     return _json_response({
         "name": "Store Extractor Firebase Functions",
-        "version": "0.4.0",
+        "version": "0.5.0",
         "status": "ok",
     }, origin=origin)

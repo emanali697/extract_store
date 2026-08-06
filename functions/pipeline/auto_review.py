@@ -4,8 +4,8 @@ Auto-review for Tier 3 stores.
 For each "يحتاج تحقق ميداني" store, run cheap automated checks before
 sending it to a human reviewer:
 
-1. **Phone cleanup** — normalize Arabic digits, validate Saudi formats,
-   try to repair OCR errors. Stores keep only the phones that pass.
+1. **Phone validation** — normalize Arabic digits and validate Saudi formats
+   without guessing or repairing any digit.
 2. **Gemini-as-judge** — a single batched call asks Gemini to score how
    plausible the extracted name is (0.0 = OCR garbage, 1.0 = clearly a
    real Arabic store name). Cheap because we send up to 20 stores per call.
@@ -35,17 +35,17 @@ from typing import Iterable
 from pathlib import Path
 
 from progress import emit_progress
-from phone_utils import classify_phone, correct_ocr_error, extract_digits
+from phone_utils import classify_phone
 
 
 # Thresholds (tune freely)
 #
 # Two-tier auto-pass policy:
 #   STRONG: Gemini ≥ 0.90 alone is enough evidence (name is unambiguously a
-#           real Arabic store name on a real OCR'd sign).
+#           real Arabic store name on a visually read sign).
 #   SOFT:   Gemini ≥ 0.70 + at least one secondary signal — a valid Saudi
 #           phone OR a multi-word name. Multi-word names are much less likely
-#           to be OCR noise than single tokens.
+#           to be visual-reading noise than single tokens.
 AUTO_PASS_CONF_STRONG = 0.90
 AUTO_PASS_CONF_SOFT = 0.70
 AUTO_REJECT_CONF = 0.40
@@ -71,7 +71,7 @@ def _split_phones(raw):
 def clean_store_phones(store, extra_text=""):
     """Return a list of normalized valid phones for one store.
     `extra_text` lets us also scan additional text (e.g. multimodal output)
-    for phones Gemini missed when extracting from the OCR pass."""
+    for phones present in Gemini's visible-text transcription."""
     raw_phones = _split_phones(store.get("phone"))
 
     # Also scan extra_text for any Saudi-looking sequence of digits
@@ -79,15 +79,14 @@ def clean_store_phones(store, extra_text=""):
         for m in re.finditer(r"[\d٠-٩]{7,15}", extra_text):
             raw_phones.append(m.group(0))
 
-    pool = [extract_digits(p) for p in raw_phones]
+    arabic_digits = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
+    pool = [re.sub(r"\D", "", str(p).translate(arabic_digits)) for p in raw_phones]
     pool = [p for p in pool if p]
 
     clean = []
     seen = set()
     for digits in pool:
         formatted, _kind = classify_phone(digits)
-        if not formatted:
-            formatted = correct_ocr_error(digits, pool)
         if formatted and formatted not in seen:
             seen.add(formatted)
             clean.append(formatted)
@@ -110,14 +109,14 @@ def _build_judge_prompt(batch):
         )
     body = "\n".join(lines)
 
-    return f"""You are validating store names extracted by OCR + LLM from dashcam footage on a Saudi street.
+    return f"""You are validating store names read visually by Gemini from dashcam footage on a Saudi street.
 
-For each entry below, decide how plausible it is that the name is a REAL store/business (not OCR garbage, not a road sign, not random letters).
+For each entry below, decide how plausible it is that the name is a REAL store/business (not visual-reading noise, not a road sign, not random letters).
 
 Score 0.0 to 1.0:
   1.0 → Clearly a plausible Arabic business name (مطعم/بقالة/كافيه/صيدلية...)
   0.5 → Maybe a real name but fragmented or category-only ("بقالة" alone)
-  0.0 → Looks like OCR garbage (random letters, single chars, sign noise)
+  0.0 → Looks like visual-reading noise (random letters, single chars, sign noise)
 
 Bonus if the entry has a valid Saudi phone number — that's strong evidence it's real.
 
@@ -320,6 +319,14 @@ def multimodal_verify(stores, signs_dir: Path, log_fn=print):
 
     for s in stores:
         done += 1
+        # v3 now reads every storefront directly with Gemini and preserves the
+        # exact visual result. Do not pay for (or risk conflicting with) a
+        # second read of the same sign during Tier-3 review.
+        existing = s.get("multimodal") or {}
+        if existing.get("name") and existing.get("sign_image"):
+            matched += 1
+            emit_progress(done, total, log_fn=log_fn)
+            continue
         sign_path = _pick_sign_image(s, signs_dir)
         if not sign_path:
             emit_progress(done, total, log_fn=log_fn)
@@ -471,6 +478,14 @@ def auto_review(stores, log_fn=print, signs_dir=None):
     counts = {"auto_passed": 0, "auto_rejected": 0, "needs_human": 0}
     for s in tier3:
         decision, conf, reason, phones = _decide(s)
+        if s.get("possible_duplicates"):
+            decision = "needs_human"
+            conf = min(float(conf or 0), 0.79)
+            duplicate_names = ", ".join(
+                item.get("name", "") for item in s["possible_duplicates"]
+                if item.get("name")
+            )
+            reason = f"احتمال تكرار غير محسوم مع: {duplicate_names}"
         counts[decision] += 1
 
         mm = s.get("multimodal") or {}

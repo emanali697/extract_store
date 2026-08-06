@@ -84,7 +84,7 @@ firebase functions:config:set \
   app.allowed_origins="https://extract-store.vercel.app,http://localhost:5173" \
   app.gcp_project_id="store-extract" \
   app.pipeline_topic="run-pipeline" \
-  app.storage_bucket="store-extract.appspot.com" \
+  app.storage_bucket="store-extract.firebasestorage.app" \
   app.firestore_collection="stores" \
   app.traders_collection="stores"
 ```
@@ -100,7 +100,7 @@ From the repo root:
 ```powershell
 cd "D:/sharea elnassim/extract stores"
 firebase login
-firebase deploy --only functions
+firebase deploy --only functions,storage
 ```
 
 The first deploy may take several minutes because the pipeline dependencies (opencv-python, google-cloud-vision, google-genai, etc.) are large.
@@ -118,7 +118,7 @@ VITE_API_BASE_URL=https://us-central1-store-extract.cloudfunctions.net
 VITE_FIREBASE_API_KEY=...
 VITE_FIREBASE_AUTH_DOMAIN=store-extract.firebaseapp.com
 VITE_FIREBASE_PROJECT_ID=store-extract
-VITE_FIREBASE_STORAGE_BUCKET=store-extract.appspot.com
+VITE_FIREBASE_STORAGE_BUCKET=store-extract.firebasestorage.app
 VITE_FIREBASE_SENDER_ID=...
 VITE_FIREBASE_APP_ID=...
 ```
@@ -155,7 +155,14 @@ VITE_API_BASE_URL=http://127.0.0.1:5001/store-extract/us-central1
 ## 6. Important notes
 
 - The ML pipeline is copied into `functions/pipeline/` during deployment.
-- Video files are uploaded directly from the browser to Firebase Storage.
+- Videos of 64 MB or more are uploaded directly to Firebase Storage in parallel
+  chunks, composed by `complete_upload`, and removed automatically after the
+  worker finishes. Only final JSON/Excel files and sign images required for
+  human review are retained.
+- Deploy Storage rules together with Functions; otherwise multipart uploads
+  under `jobs/{jobId}/upload_parts/` will be denied.
+- Storefront names and phones are read directly from sign images with Gemini.
+  Cloud Vision remains in use only for the GPS/speed overlay.
 - Progress is streamed to the frontend via Firestore snapshots.
 - The primary pipeline worker runs through Cloud Tasks with a 30-minute
   dispatch deadline, 4 GB memory, concurrency 1, and up to 3 instances. Very

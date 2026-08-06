@@ -19,8 +19,8 @@ PIPELINE_STAGE_TO_UI = {
     2: 1,   # GPS read
     3: 2,   # filter by speed
     4: 3,   # crop signs
-    5: 4,   # OCR
-    6: 5,   # Gemini
+    5: 4,   # Gemini visual sign reading
+    6: 5,   # evidence validation / dedupe
     # 7 is auto-detect center → no UI row
     8: 6,   # Places
     11: 7,  # v5 matching (Google candidates) — folds into "تحديد الحالة"

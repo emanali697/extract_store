@@ -6,5 +6,12 @@ service firebase.storage {
                     && request.resource.contentType.matches('video/.*');
       allow read, update, delete: if false;
     }
+
+    match /jobs/{jobId}/upload_parts/{partName} {
+      allow create: if partName.matches('part_[0-9]{2}')
+                    && request.resource.size <= 2 * 1024 * 1024 * 1024
+                    && request.resource.contentType.matches('video/.*');
+      allow read, update, delete: if false;
+    }
   }
 }

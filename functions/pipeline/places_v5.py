@@ -165,6 +165,19 @@ def match_all_stores(stores, log_fn=print):
 
     for i, s in enumerate(stores, 1):
         emit_progress(i, max(1, n), log_fn=log_fn)
+        evidence = s.get('visual_evidence') or {}
+        if not evidence.get('verified') or s.get('source_visible_in_video') is not True:
+            result = _frame_only("مستبعد: لا يوجد دليل بصري مؤكد من الفيديو")
+            s['v5'] = result
+            s['excluded_from_results'] = True
+            s['needs_review'] = True
+            flags = list(s.get('review_flags') or [])
+            if "لا يوجد دليل بصري مؤكد من الفيديو" not in flags:
+                flags.append("لا يوجد دليل بصري مؤكد من الفيديو")
+            s['review_flags'] = flags
+            counts['frame_only'] += 1
+            log_fn(f"  [{i:>2}/{n}] skipped: no verified video evidence")
+            continue
         name = s.get('name_ar', '') or ''
         lat = s.get('lat')
         lng = s.get('lng')

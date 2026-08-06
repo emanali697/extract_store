@@ -32,6 +32,11 @@ def video_path(job_id: str) -> str:
     return f"jobs/{job_id}/video.mp4"
 
 
+def video_part_path(job_id: str, index: int) -> str:
+    """Storage path for one browser-uploaded multipart video chunk."""
+    return f"jobs/{job_id}/upload_parts/part_{index:02d}"
+
+
 def job_output_prefix(job_id: str) -> str:
     """Storage prefix for all pipeline outputs for a job."""
     return f"jobs/{job_id}/outputs/"
@@ -93,6 +98,50 @@ def delete(storage_path: str) -> None:
     blob = bucket().blob(storage_path)
     if blob.exists():
         blob.delete()
+
+
+def delete_prefix(storage_prefix: str) -> None:
+    """Delete every object below a Storage prefix."""
+    for blob in bucket().list_blobs(prefix=storage_prefix):
+        blob.delete()
+
+
+def compose_video_parts(job_id: str, part_count: int) -> tuple[str, int]:
+    """Compose uploaded chunks into the job video, then remove the chunks."""
+    if not 2 <= part_count <= 16:
+        raise ValueError("part_count must be between 2 and 16")
+
+    b = bucket()
+    sources = [b.blob(video_part_path(job_id, i)) for i in range(part_count)]
+    destination_path = video_path(job_id)
+    destination = b.blob(destination_path)
+
+    # Make completion safe to retry if the function response was interrupted
+    # after the compose operation had already succeeded.
+    if destination.exists():
+        destination.reload()
+        for source in sources:
+            if source.exists():
+                source.delete()
+        return destination_path, int(destination.size or 0)
+
+    total_size = 0
+    for source in sources:
+        source.reload()
+        if source.size is None:
+            raise FileNotFoundError(f"missing upload part: {source.name}")
+        total_size += int(source.size)
+
+    if total_size > 5 * 1024 * 1024 * 1024:
+        raise ValueError("uploaded video exceeds the 5 GiB limit")
+
+    destination.compose(sources)
+    destination.content_type = "video/mp4"
+    destination.patch()
+
+    for source in sources:
+        source.delete()
+    return destination_path, total_size
 
 
 def signed_url(

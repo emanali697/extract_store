@@ -45,6 +45,18 @@ export async function startJob({ jobId }) {
   return res.data
 }
 
+export async function completeMultipartUpload(jobId, partCount) {
+  if (isLocalBackend) return null
+  const res = await api.post('/complete_upload', { jobId, partCount })
+  return res.data
+}
+
+export async function abortMultipartUpload(jobId) {
+  if (isLocalBackend) return null
+  const res = await api.post('/abort_upload', { jobId })
+  return res.data
+}
+
 export async function fetchAllJobs(limit = 20) {
   const endpoint = isLocalBackend ? '/jobs' : '/list_jobs_fn'
   const res = await api.get(endpoint, { params: { limit } })
@@ -137,11 +149,26 @@ export async function downloadCsvUrl(jobId) {
 export async function uploadVideoToBackend(file, { onProgress } = {}) {
   const form = new FormData()
   form.append('file', file)
+  const startedAt = performance.now()
+  const samples = []
   const res = await api.post('/upload', form, {
     timeout: 0,
     onUploadProgress: (event) => {
       if (!event.total) return
-      onProgress?.(event.loaded / event.total)
+      const now = performance.now()
+      samples.push({ at: now, bytes: event.loaded })
+      while (samples.length > 2 && now - samples[0].at > 10_000) samples.shift()
+      const first = samples[0]
+      const seconds = Math.max((now - first.at) / 1000, 0.25)
+      const speedBps = Math.max(0, (event.loaded - first.bytes) / seconds)
+      onProgress?.({
+        progress: event.loaded / event.total,
+        bytesTransferred: event.loaded,
+        totalBytes: event.total,
+        speedBps,
+        etaSeconds: speedBps > 0 ? (event.total - event.loaded) / speedBps : null,
+        elapsedSeconds: (now - startedAt) / 1000,
+      })
     },
   })
   return res.data

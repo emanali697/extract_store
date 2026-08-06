@@ -25,7 +25,7 @@ if GCP_CREDENTIALS and os.path.exists(GCP_CREDENTIALS):
     os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = GCP_CREDENTIALS
 
 from extractor import extract_frames_pass1, filter_frames_by_speed, process_selected_frames
-from ocr import read_gps_from_images, batch_ocr
+from ocr import read_gps_from_images
 from analyzer import run_analysis
 from places import enrich_stores
 from exporter import export_excel
@@ -111,18 +111,24 @@ def main():
     log("\n--- STAGE 4: Processing selected frames ---")
     processed = process_selected_frames(selected, output_dir, log_fn=log)
 
-    # === Stage 5: OCR on sign crops ===
-    log("\n--- STAGE 5: OCR on sign images ---")
-    sign_paths = [p['sign_path'] for p in processed]
-    sign_texts = batch_ocr(sign_paths, log_fn=log)
-
     # GPS for processed frames
     gps_for_processed = [{'speed': p.get('speed'), 'lat': p.get('lat'), 'lng': p.get('lng')}
                          for p in processed]
 
-    # === Stage 6: Gemini analysis ===
-    log("\n--- STAGE 6: Gemini analysis ---")
-    stores = run_analysis(processed, sign_texts, gps_for_processed, log_fn=log)
+    # === Stage 5: Direct visual reading with Gemini ===
+    # Cloud Vision OCR remains limited to the GPS overlay above. Store names
+    # and phone numbers are read directly from adjacent sign images by Gemini.
+    log("\n--- STAGE 5: Gemini visual sign reading ---")
+    stores = run_analysis(processed, [], gps_for_processed, log_fn=log)
+
+    # === Stage 6: Evidence validation ===
+    log("\n--- STAGE 6: Gemini evidence validation ---")
+    stores = [
+        store for store in stores
+        if (store.get('visual_evidence') or {}).get('verified')
+        and store.get('source_visible_in_video') is True
+    ]
+    log(f"Visually verified stores: {len(stores)}")
 
     # === Stage 7: Determine center coordinates for Places ===
     center_lat = args.center_lat
