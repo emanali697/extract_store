@@ -103,20 +103,31 @@ async def _read_results(job: Job) -> dict:
     needs_human = 0
 
     for i, s in enumerate(raw, start=1):
+        has_visual_contract = (
+            "visual_evidence" in s or "source_visible_in_video" in s
+        )
+        if s.get("excluded_from_results") or (
+            has_visual_contract and (
+                s.get("source_visible_in_video") is not True
+                or not (s.get("visual_evidence") or {}).get("verified")
+            )
+        ):
+            continue
         places = s.get("places") or {}
         v5 = s.get("v5") or {}
         candidate = v5.get("candidate") or {}
         status_check = s.get("status_check") or {}
         auto_rev = s.get("auto_review") or {}
         ar_decision = auto_rev.get("decision")
+        if ar_decision == "auto_rejected":
+            auto_rejected += 1
+            continue
         if ar_decision == "auto_passed":
             auto_passed += 1
-        elif ar_decision == "auto_rejected":
-            auto_rejected += 1
         elif ar_decision == "needs_human":
             needs_human += 1
 
-        phone = s.get("phone") or places.get("phone") or candidate.get("phone") or ""
+        phone = s.get("phone") or ""
 
         # Prefer Tier from status_check (v6), else v5, else heuristic
         if status_check.get("tier") in (1, 2, 3):
@@ -158,6 +169,7 @@ async def _read_results(job: Job) -> dict:
             "name": name,
             "category": category,
             "phone": phone,
+            "phone_source": s.get("phone_source") or ("gemini_visual" if phone else "not_visible"),
             "status": status_label,
             "tier": tier,
             "lat": s.get("lat") or candidate.get("lat"),
@@ -187,7 +199,8 @@ async def _read_results(job: Job) -> dict:
         ):
             mm_raw = auto_rev.get("multimodal_raw") or ""
             mm_name = auto_rev.get("multimodal_name") or ""
-            sign_image = auto_rev.get("sign_image") or ""
+            evidence_images = (s.get("visual_evidence") or {}).get("sign_images") or []
+            sign_image = auto_rev.get("sign_image") or (evidence_images[0] if evidence_images else "")
             review_items.append({
                 "id": f"r{i}",
                 "suggestedName": name,
@@ -201,6 +214,7 @@ async def _read_results(job: Job) -> dict:
                               or 0.5,
                 "tier": tier,
                 "signImageUrl": f"/jobs/{job.job_id}/sign/{sign_image}" if sign_image else "",
+                "signImageFilename": sign_image,
                 "note": auto_rev.get("gemini_reason") or s.get("review_note") or "",
             })
 
