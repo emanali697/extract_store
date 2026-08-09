@@ -1,228 +1,335 @@
-"""
-دمج المتاجر المكررة (نفس المتجر بقراءات OCR مختلفة).
-معايير التكرار:
-- ≥1 كلمة جوهرية مشتركة + Jaccard ≥ 0.5 على الكلمات الجوهرية
-- المسافة بين الفريمات ≤ 8
+"""Arabic-aware store deduplication with Gemini adjudication for borderline pairs."""
+from __future__ import annotations
 
-استراتيجية الدمج:
-- الاسم: الأطول/الأكمل (لو متساويين، اللي فيه تليفون)
-- التليفون: union من كل القراءات
-- الفريمات: union
-- التصنيف: الأكثر تكراراً
-- الموقع: أحسن v5 match (confirmed_high > confirmed_medium > frame_only)
-- ملاحظات: union
-"""
+import json
+import math
 import re
+import time
 from collections import Counter
+from difflib import SequenceMatcher
 
 
 STOP_WORDS = {
-    'مطعم', 'مطاعم', 'بوفية', 'بوفيه', 'كفتيريا', 'كفتريا',
-    'محل', 'محلات', 'تموينات', 'بقالة', 'عصيرات',
-    'فول', 'تميس', 'تفسيس', 'مغاسل',
-    'و', 'ال', 'في', 'للأسر', 'للاسر',
-    'المدينه', 'المدينة', 'الجديده', 'الجديدة',
+    "مطعم", "مطاعم", "بوفيه", "كافتيريا", "محل", "محلات", "تموينات",
+    "بقالة", "عصيرات", "للتجارة", "للمقاولات", "و", "في", "من", "على",
 }
 
 
 def normalize_arabic(text):
-    if not text:
-        return ""
-    text = re.sub(r'[ً-ْٰ]', '', text)
-    text = text.replace('ة', 'ه').replace('ى', 'ي')
-    text = text.replace('أ', 'ا').replace('إ', 'ا').replace('آ', 'ا')
-    text = text.replace('ؤ', 'و').replace('ئ', 'ي')
-    return re.sub(r'\s+', ' ', text).strip()
+    text = str(text or "").strip().lower()
+    text = re.sub(r"[\u064b-\u065f\u0670]", "", text)
+    text = text.translate(str.maketrans({
+        "أ": "ا", "إ": "ا", "آ": "ا", "ٱ": "ا",
+        "ة": "ه", "ى": "ي", "ؤ": "و", "ئ": "ي",
+    }))
+    text = re.sub(r"[^\u0600-\u06ff0-9a-z\s]", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
 
 
 def core_words(text):
-    words = normalize_arabic(text).split()
-    return set(w for w in words if w not in STOP_WORDS and len(w) >= 3)
+    return {
+        word for word in normalize_arabic(text).split()
+        if word not in STOP_WORDS and len(word) >= 2
+    }
 
 
-def parse_frames(s):
-    if not s:
-        return []
-    out = []
-    for part in str(s).split(','):
-        part = part.strip()
-        if '-' in part:
-            try:
-                a, b = part.split('-')
-                out.extend(range(int(a), int(b) + 1))
-            except ValueError:
-                continue
-        else:
-            try:
-                out.append(int(part))
-            except ValueError:
-                continue
-    return sorted(set(out))
-
-
-def frame_distance(f1, f2):
-    if not f1 or not f2:
-        return 999
-    if set(f1) & set(f2):
-        return 0
-    return min(abs(a - b) for a in f1 for b in f2)
-
-
-def is_duplicate(s1, s2, max_frame_gap=8, min_jaccard=0.5):
-    c1 = core_words(s1.get('name_ar', ''))
-    c2 = core_words(s2.get('name_ar', ''))
-    if not c1 or not c2:
-        return False
-    common = c1 & c2
-    if not common:
-        return False
-    jac = len(common) / len(c1 | c2)
-    if jac < min_jaccard:
-        return False
-    fd = frame_distance(parse_frames(s1.get('frame', '')), parse_frames(s2.get('frame', '')))
-    return fd <= max_frame_gap
-
-
-def find_duplicate_groups(stores):
-    """Union-Find لتجميع المتاجر المكررة."""
-    n = len(stores)
-    parent = list(range(n))
-
-    def find(x):
-        while parent[x] != x:
-            parent[x] = parent[parent[x]]
-            x = parent[x]
-        return x
-
-    def union(a, b):
-        ra, rb = find(a), find(b)
-        if ra != rb:
-            parent[ra] = rb
-
-    for i in range(n):
-        for j in range(i + 1, n):
-            if is_duplicate(stores[i], stores[j]):
-                union(i, j)
-
-    groups = {}
-    for i in range(n):
-        groups.setdefault(find(i), []).append(stores[i])
-    return list(groups.values())
-
-
-def pick_best_name(group):
-    """أحسن اسم: الأطول، ولو متساويين، اللي فيه تليفون."""
-    def score(s):
-        name = (s.get('name_ar') or '').strip()
-        return (len(name), 1 if s.get('phone') else 0, len(name.split()))
-    return sorted(group, key=score, reverse=True)[0].get('name_ar', '')
-
-
-def merge_phones(group):
-    """جمع كل الأرقام الفريدة."""
-    phones = set()
-    for s in group:
-        raw = s.get('phone', '') or ''
-        for p in raw.split(','):
-            p = p.strip()
-            if p:
-                phones.add(p)
-    return ', '.join(sorted(phones))
-
-
-def merge_frames(group):
-    """جمع كل الفريمات وعرضها كـ ranges."""
-    all_frames = set()
-    for s in group:
-        all_frames.update(parse_frames(s.get('frame', '')))
-    if not all_frames:
-        return ''
-    sorted_f = sorted(all_frames)
-    # compress to ranges
-    ranges = []
-    start = sorted_f[0]
-    prev = start
-    for f in sorted_f[1:]:
-        if f == prev + 1:
-            prev = f
-        else:
-            ranges.append(f"{start}-{prev}" if start != prev else str(start))
-            start = f
-            prev = f
-    ranges.append(f"{start}-{prev}" if start != prev else str(start))
-    return ','.join(ranges)
-
-
-def merge_category(group):
-    cats = [s.get('category', '') for s in group if s.get('category')]
-    if not cats:
-        return ''
-    return Counter(cats).most_common(1)[0][0]
-
-
-def pick_best_location(group):
-    """أفضل مطابقة v5: confirmed_high > confirmed_medium > frame_only."""
-    priority = {'confirmed_high': 3, 'confirmed_medium': 2, 'frame_only': 1}
-    def score(s):
-        v5 = s.get('v5', {}) or {}
-        st = v5.get('status', 'frame_only')
-        conf = v5.get('confidence', 0)
-        return (priority.get(st, 0), conf)
-    return sorted(group, key=score, reverse=True)[0]
-
-
-def merge_notes(group):
-    notes = [s.get('notes', '') for s in group if s.get('notes')]
-    seen = set()
-    out = []
-    for n in notes:
-        if n not in seen:
-            seen.add(n); out.append(n)
-    return ' | '.join(out)
-
-
-def merge_ocr_texts(group):
-    """Union of all raw OCR strings from the merged group."""
-    chunks = []
-    seen = set()
-    for s in group:
-        raw = (s.get('ocr_text') or '').strip()
-        if not raw:
+def parse_frames(value):
+    if isinstance(value, list):
+        values = value
+    else:
+        values = re.findall(r"\d+", str(value or ""))
+    frames = set()
+    for value in values:
+        try:
+            frames.add(int(value))
+        except (TypeError, ValueError):
             continue
-        # The single store may itself already hold a pipe-joined list
-        for part in raw.split(' | '):
+    return sorted(frames)
+
+
+def frame_distance(first, second):
+    first_frames = parse_frames(first.get("evidence_frames") or first.get("frame"))
+    second_frames = parse_frames(second.get("evidence_frames") or second.get("frame"))
+    if not first_frames or not second_frames:
+        return None
+    if set(first_frames) & set(second_frames):
+        return 0
+    return min(abs(a - b) for a in first_frames for b in second_frames)
+
+
+def _coordinates(store):
+    try:
+        lat = float(store.get("lat"))
+        lng = float(store.get("lng"))
+        return lat, lng
+    except (TypeError, ValueError):
+        return None
+
+
+def gps_distance(first, second):
+    a = _coordinates(first)
+    b = _coordinates(second)
+    if not a or not b:
+        return None
+    lat1, lng1 = map(math.radians, a)
+    lat2, lng2 = map(math.radians, b)
+    dlat = lat2 - lat1
+    dlng = lng2 - lng1
+    value = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlng / 2) ** 2
+    return 2 * 6_371_000 * math.asin(math.sqrt(value))
+
+
+def _phone_digits(store):
+    phones = set()
+    for part in re.split(r"[,|/]", str(store.get("phone") or "")):
+        digits = re.sub(r"\D", "", part)
+        if 7 <= len(digits) <= 15:
+            phones.add(digits)
+    return phones
+
+
+def pair_metrics(first, second):
+    name1 = normalize_arabic(first.get("name_ar"))
+    name2 = normalize_arabic(second.get("name_ar"))
+    char_similarity = SequenceMatcher(None, name1, name2).ratio() if name1 and name2 else 0.0
+    words1, words2 = core_words(name1), core_words(name2)
+    token_similarity = (
+        len(words1 & words2) / len(words1 | words2)
+        if words1 and words2 else 0.0
+    )
+    return {
+        "char_similarity": char_similarity,
+        "token_similarity": token_similarity,
+        "frame_gap": frame_distance(first, second),
+        "distance_m": gps_distance(first, second),
+        "same_phone": bool(_phone_digits(first) & _phone_digits(second)),
+    }
+
+
+def _nearby(metrics):
+    frame_gap = metrics["frame_gap"]
+    distance_m = metrics["distance_m"]
+    return (
+        (frame_gap is not None and frame_gap <= 12)
+        or (distance_m is not None and distance_m <= 80)
+    )
+
+
+def _strong_duplicate(metrics):
+    if not _nearby(metrics):
+        return False
+    if metrics["same_phone"]:
+        return True
+    if metrics["char_similarity"] >= 0.9:
+        return True
+    return (
+        metrics["char_similarity"] >= 0.8
+        and metrics["token_similarity"] >= 0.5
+    )
+
+
+def _borderline(metrics):
+    return _nearby(metrics) and (
+        metrics["char_similarity"] >= 0.55
+        or metrics["token_similarity"] >= 0.34
+    )
+
+
+PAIR_SCHEMA = {
+    "type": "ARRAY",
+    "items": {
+        "type": "OBJECT",
+        "properties": {
+            "pair_id": {"type": "INTEGER"},
+            "same_store": {"type": "BOOLEAN"},
+            "confidence": {"type": "NUMBER"},
+            "reason": {"type": "STRING"},
+        },
+        "required": ["pair_id", "same_store", "confidence", "reason"],
+    },
+}
+
+
+def _gemini_pair_decisions(pairs, log_fn):
+    if not pairs:
+        return {}
+    try:
+        from analyzer import get_client
+        from config import GEMINI_MODEL
+    except Exception as error:
+        log_fn(f"Dedupe Gemini unavailable: {error}")
+        return {}
+
+    decisions = {}
+    for offset in range(0, len(pairs), 20):
+        chunk = pairs[offset:offset + 20]
+        payload = []
+        for pair_id, _first_index, _second_index, first, second, metrics in chunk:
+            payload.append({
+                "pair_id": pair_id,
+                "first": {
+                    "name": first.get("name_ar", ""),
+                    "phone": first.get("phone", ""),
+                    "visible_text": first.get("raw_visible_text", ""),
+                },
+                "second": {
+                    "name": second.get("name_ar", ""),
+                    "phone": second.get("phone", ""),
+                    "visible_text": second.get("raw_visible_text", ""),
+                },
+                "metrics": metrics,
+            })
+        prompt = (
+            "Decide whether each pair is the same physical storefront seen in adjacent dashcam frames. "
+            "Be tolerant of one or two Arabic letter-reading differences, hamza/yaa/taa-marbuta variants, "
+            "but do not merge neighboring stores or branches merely because their category words match. "
+            "Return one decision per pair_id. Data:\n" + json.dumps(payload, ensure_ascii=False)
+        )
+        try:
+            response = get_client().models.generate_content(
+                model=GEMINI_MODEL,
+                contents=prompt,
+                config={
+                    "temperature": 0.0,
+                    "max_output_tokens": 4096,
+                    "response_mime_type": "application/json",
+                    "response_schema": PAIR_SCHEMA,
+                },
+            )
+            for item in json.loads(response.text or "[]"):
+                decisions[int(item["pair_id"])] = item
+        except Exception as error:
+            log_fn(f"Dedupe Gemini adjudication failed: {str(error)[:160]}")
+        time.sleep(0.2)
+    return decisions
+
+
+def _merge_unique_text(values, separator=" | "):
+    output = []
+    for value in values:
+        for part in str(value or "").split(separator):
             part = part.strip()
-            if part and part not in seen:
-                seen.add(part)
-                chunks.append(part)
-    return ' | '.join(chunks)
+            if part and part not in output:
+                output.append(part)
+    return separator.join(output)
 
 
-def merge_group(group):
-    """دمج مجموعة من المتاجر المكررة في واحد."""
-    if len(group) == 1:
-        s = dict(group[0])
-        s['merged_from'] = 1
-        s['original_names'] = [s.get('name_ar', '')]
-        return s
+def _merge_group(group):
+    def quality(store):
+        return (
+            float(store.get("confidence", 0) or 0),
+            bool(store.get("phone")),
+            len(str(store.get("name_ar") or "")),
+        )
 
-    base = pick_best_location(group)
-    merged = dict(base)
-    merged['name_ar'] = pick_best_name(group)
-    merged['phone'] = merge_phones(group)
-    merged['frame'] = merge_frames(group)
-    merged['category'] = merge_category(group) or merged.get('category', '')
-    merged['notes'] = merge_notes(group)
-    merged['ocr_text'] = merge_ocr_texts(group)
-    merged['merged_from'] = len(group)
-    merged['original_names'] = [s.get('name_ar', '') for s in group]
+    best = max(group, key=quality)
+    merged = dict(best)
+    frames = sorted({
+        frame for store in group
+        for frame in parse_frames(store.get("evidence_frames") or store.get("frame"))
+    })
+    phones = []
+    for store in group:
+        for phone in _phone_digits(store):
+            if phone not in phones:
+                phones.append(phone)
+    evidence_images = []
+    for store in group:
+        for image in (store.get("visual_evidence") or {}).get("sign_images", []):
+            if image not in evidence_images:
+                evidence_images.append(image)
+    flags = []
+    for store in group:
+        for flag in store.get("review_flags") or []:
+            if flag not in flags:
+                flags.append(flag)
+
+    merged["frame"] = ",".join(map(str, frames))
+    merged["evidence_frames"] = frames
+    merged["phone"] = ", ".join(phones)
+    merged["ocr_text"] = _merge_unique_text(store.get("ocr_text") for store in group)
+    merged["raw_visible_text"] = merged["ocr_text"]
+    merged["review_flags"] = flags
+    merged["needs_review"] = bool(flags)
+    merged["merged_from"] = len(group)
+    merged["original_names"] = [store.get("name_ar", "") for store in group]
+    visual = dict(merged.get("visual_evidence") or {})
+    visual.update({"verified": True, "frames": frames, "sign_images": evidence_images})
+    merged["visual_evidence"] = visual
+    if merged.get("multimodal"):
+        merged["multimodal"] = dict(merged["multimodal"])
+        if evidence_images:
+            merged["multimodal"]["sign_image"] = evidence_images[0]
     return merged
 
 
+def merge_group(group):
+    """Public compatibility wrapper used by the legacy v6 finalizer."""
+    return _merge_group(group)
+
+
 def dedupe_stores(stores, log_fn=print):
-    """الواجهة الرئيسية: ياخد قائمة، يرجع قائمة بعد الدمج."""
-    groups = find_duplicate_groups(stores)
-    merged = [merge_group(g) for g in groups]
-    n_dupes = sum(1 for g in groups if len(g) > 1)
-    log_fn(f"Dedupe: {len(stores)} → {len(merged)} متجر ({n_dupes} مجموعات اتدمجت)")
+    count = len(stores)
+    parent = list(range(count))
+
+    def find(index):
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    def union(first, second):
+        root_a, root_b = find(first), find(second)
+        if root_a != root_b:
+            parent[root_b] = root_a
+
+    borderline_pairs = []
+    pair_id = 0
+    for first_index in range(count):
+        for second_index in range(first_index + 1, count):
+            metrics = pair_metrics(stores[first_index], stores[second_index])
+            if _strong_duplicate(metrics):
+                union(first_index, second_index)
+            elif _borderline(metrics):
+                borderline_pairs.append((
+                    pair_id,
+                    first_index,
+                    second_index,
+                    stores[first_index],
+                    stores[second_index],
+                    metrics,
+                ))
+                pair_id += 1
+
+    decisions = _gemini_pair_decisions(borderline_pairs, log_fn)
+    manual_pairs = 0
+    for pair in borderline_pairs:
+        current_id, first_index, second_index, first, second, _metrics = pair
+        decision = decisions.get(current_id)
+        if decision and decision.get("same_store") and float(decision.get("confidence", 0) or 0) >= 0.8:
+            union(first_index, second_index)
+            continue
+        if decision and not decision.get("same_store") and float(decision.get("confidence", 0) or 0) >= 0.8:
+            continue
+        manual_pairs += 1
+        reason = (decision or {}).get("reason") or "تشابه أسماء غير محسوم آليًا"
+        for store, other in ((first, second), (second, first)):
+            possible = list(store.get("possible_duplicates") or [])
+            possible.append({"name": other.get("name_ar", ""), "reason": reason})
+            store["possible_duplicates"] = possible
+            flags = list(store.get("review_flags") or [])
+            if "احتمال تكرار يحتاج مراجعة" not in flags:
+                flags.append("احتمال تكرار يحتاج مراجعة")
+            store["review_flags"] = flags
+            store["needs_review"] = True
+
+    groups = {}
+    for index, store in enumerate(stores):
+        groups.setdefault(find(index), []).append(store)
+    merged = [_merge_group(group) for group in groups.values()]
+    merged_groups = sum(1 for group in groups.values() if len(group) > 1)
+    log_fn(
+        f"Dedupe: {len(stores)} -> {len(merged)} stores | "
+        f"merged groups={merged_groups} | manual pairs={manual_pairs}"
+    )
     return merged

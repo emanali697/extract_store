@@ -132,20 +132,35 @@ async def _read_results(job: Job) -> dict:
     needs_human = 0
 
     for i, s in enumerate(raw, start=1):
+        # Places may only enrich a store that Gemini actually saw in the
+        # uploaded video. Never surface a database-only nearby business.
+        has_visual_contract = (
+            "visual_evidence" in s or "source_visible_in_video" in s
+        )
+        if s.get("excluded_from_results") or (
+            has_visual_contract and (
+                s.get("source_visible_in_video") is not True
+                or not (s.get("visual_evidence") or {}).get("verified")
+            )
+        ):
+            continue
         places = s.get("places") or {}
         v5 = s.get("v5") or {}
         candidate = v5.get("candidate") or {}
         status_check = s.get("status_check") or {}
         auto_rev = s.get("auto_review") or {}
         ar_decision = auto_rev.get("decision")
+        if ar_decision == "auto_rejected":
+            auto_rejected += 1
+            continue
         if ar_decision == "auto_passed":
             auto_passed += 1
-        elif ar_decision == "auto_rejected":
-            auto_rejected += 1
         elif ar_decision == "needs_human":
             needs_human += 1
 
-        phone = s.get("phone") or places.get("phone") or candidate.get("phone") or ""
+        # The user-facing phone must be a number Gemini actually read from the
+        # storefront. Places numbers remain metadata for matching/status only.
+        phone = s.get("phone") or ""
 
         if status_check.get("tier") in (1, 2, 3):
             tier = int(status_check["tier"])
@@ -185,6 +200,7 @@ async def _read_results(job: Job) -> dict:
             "name": name,
             "category": category,
             "phone": phone,
+            "phone_source": s.get("phone_source") or ("gemini_visual" if phone else "not_visible"),
             "status": status_label,
             "tier": tier,
             "lat": s.get("lat") or candidate.get("lat"),
@@ -212,7 +228,8 @@ async def _read_results(job: Job) -> dict:
         ):
             mm_raw = auto_rev.get("multimodal_raw") or ""
             mm_name = auto_rev.get("multimodal_name") or ""
-            sign_image = auto_rev.get("sign_image") or ""
+            evidence_images = (s.get("visual_evidence") or {}).get("sign_images") or []
+            sign_image = auto_rev.get("sign_image") or (evidence_images[0] if evidence_images else "")
             review_items.append({
                 "id": f"r{i}",
                 "suggestedName": name,
@@ -399,7 +416,8 @@ async def run_pipeline(job: Job) -> None:
     # v6 (optional)
     v6_ok = False
     v5_json = Path(job.output_dir) / "stores_v5_raw.json"
-    if PIPELINE_RUN_V6.exists() and v5_json.exists():
+    raw_json = Path(job.output_dir) / "stores_raw.json"
+    if PIPELINE_RUN_V6.exists() and (v5_json.exists() or raw_json.exists()):
         await _emit(job, {"type": "log", "line": "--- STAGE 12: v6 orchestrator ---"})
         cmd_v6 = [str(PIPELINE_PYTHON), str(PIPELINE_RUN_V6), job.output_dir]
         if not job.enable_status:
@@ -410,13 +428,19 @@ async def run_pipeline(job: Job) -> None:
             await _mark_stage(job, 7, "done")
             await _mark_stage(job, 8, "done")
         else:
-            partial_warnings.append(f"Status/final review failed with code {rc6}")
             await _mark_stage(job, 7, "error")
-            await _mark_stage(job, 8, "done")
+            await _mark_stage(job, 8, "error")
             await _emit(job, {
                 "type": "log",
-                "line": f"⚠️ v6 returned {rc6}, falling back to v5 results",
+                "line": f"❌ Final visual verification failed with code {rc6}",
             })
+            job.status = "error"
+            job.error = (
+                "Final Gemini visual verification failed; incomplete results "
+                "were not published. Retry the analysis when Google services are available."
+            )
+            persist_job(job)
+            return
     elif v5_ok:
         await _mark_stage(job, 7, "done")
         await _mark_stage(job, 8, "done")

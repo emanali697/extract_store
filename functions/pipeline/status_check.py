@@ -35,13 +35,13 @@ def fetch_place_details(place_id):
     if not place_id or not place_id.startswith('ChIJ'):
         return None
     url = f"https://places.googleapis.com/v1/places/{place_id}"
-    creds = get_creds()
-    headers = {
-        'Authorization': f'Bearer {creds.token}',
-        'Content-Type': 'application/json',
-        'X-Goog-FieldMask': ','.join(PLACE_DETAILS_FIELDS),
-    }
     try:
+        creds = get_creds()
+        headers = {
+            'Authorization': f'Bearer {creds.token}',
+            'Content-Type': 'application/json',
+            'X-Goog-FieldMask': ','.join(PLACE_DETAILS_FIELDS),
+        }
         r = requests.get(url, headers=headers, timeout=15)
         if r.status_code == 200:
             return r.json()

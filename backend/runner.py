@@ -103,20 +103,31 @@ async def _read_results(job: Job) -> dict:
     needs_human = 0
 
     for i, s in enumerate(raw, start=1):
+        has_visual_contract = (
+            "visual_evidence" in s or "source_visible_in_video" in s
+        )
+        if s.get("excluded_from_results") or (
+            has_visual_contract and (
+                s.get("source_visible_in_video") is not True
+                or not (s.get("visual_evidence") or {}).get("verified")
+            )
+        ):
+            continue
         places = s.get("places") or {}
         v5 = s.get("v5") or {}
         candidate = v5.get("candidate") or {}
         status_check = s.get("status_check") or {}
         auto_rev = s.get("auto_review") or {}
         ar_decision = auto_rev.get("decision")
+        if ar_decision == "auto_rejected":
+            auto_rejected += 1
+            continue
         if ar_decision == "auto_passed":
             auto_passed += 1
-        elif ar_decision == "auto_rejected":
-            auto_rejected += 1
         elif ar_decision == "needs_human":
             needs_human += 1
 
-        phone = s.get("phone") or places.get("phone") or candidate.get("phone") or ""
+        phone = s.get("phone") or ""
 
         # Prefer Tier from status_check (v6), else v5, else heuristic
         if status_check.get("tier") in (1, 2, 3):
@@ -158,6 +169,7 @@ async def _read_results(job: Job) -> dict:
             "name": name,
             "category": category,
             "phone": phone,
+            "phone_source": s.get("phone_source") or ("gemini_visual" if phone else "not_visible"),
             "status": status_label,
             "tier": tier,
             "lat": s.get("lat") or candidate.get("lat"),
@@ -187,7 +199,8 @@ async def _read_results(job: Job) -> dict:
         ):
             mm_raw = auto_rev.get("multimodal_raw") or ""
             mm_name = auto_rev.get("multimodal_name") or ""
-            sign_image = auto_rev.get("sign_image") or ""
+            evidence_images = (s.get("visual_evidence") or {}).get("sign_images") or []
+            sign_image = auto_rev.get("sign_image") or (evidence_images[0] if evidence_images else "")
             review_items.append({
                 "id": f"r{i}",
                 "suggestedName": name,
@@ -201,6 +214,7 @@ async def _read_results(job: Job) -> dict:
                               or 0.5,
                 "tier": tier,
                 "signImageUrl": f"/jobs/{job.job_id}/sign/{sign_image}" if sign_image else "",
+                "signImageFilename": sign_image,
                 "note": auto_rev.get("gemini_reason") or s.get("review_note") or "",
             })
 
@@ -369,7 +383,8 @@ async def run_pipeline(job: Job) -> None:
     # ---------- v6 (optional, needs v5 output) ----------
     v6_ok = False
     v5_json = Path(job.output_dir) / "stores_v5_raw.json"
-    if PIPELINE_RUN_V6.exists() and v5_json.exists():
+    raw_json = Path(job.output_dir) / "stores_raw.json"
+    if PIPELINE_RUN_V6.exists() and (v5_json.exists() or raw_json.exists()):
         await _emit(job, {"type": "log", "line": "--- STAGE 12: v6 orchestrator ---"})
         cmd_v6 = [str(PIPELINE_PYTHON), str(PIPELINE_RUN_V6), job.output_dir]
         if not job.enable_status:
@@ -381,11 +396,22 @@ async def run_pipeline(job: Job) -> None:
             await _mark_stage(job, 8, "done")
         else:
             await _mark_stage(job, 7, "error")
-            job.log_lines.append(f"⚠️ v6 returned {rc6}, falling back to v5 results")
+            await _mark_stage(job, 8, "error")
+            job.log_lines.append(f"❌ Final visual verification failed with code {rc6}")
             await _emit(job, {
                 "type": "log",
-                "line": f"⚠️ v6 returned {rc6}, falling back to v5 results",
+                "line": f"❌ Final visual verification failed with code {rc6}",
             })
+            job.status = "error"
+            job.error = (
+                "فشل التحقق البصري النهائي عبر Gemini؛ لم يتم نشر نتائج ناقصة. "
+                "أعد المحاولة عند استقرار خدمات Google."
+            )
+            manager.persist(job)
+            await _emit(job, {
+                "type": "status", "status": "error", "error": job.error,
+            })
+            return
     elif v5_ok:
         await _mark_stage(job, 7, "done")
 

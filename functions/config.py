@@ -15,9 +15,12 @@ TRADERS_WRITES_ENABLED = (
     in {"1", "true", "yes", "on"}
 )
 
-# Cloud Storage bucket (defaults to project-id.appspot.com)
+# Cloud Storage bucket (new Firebase projects use firebasestorage.app)
 PROJECT_ID = os.environ.get("GCP_PROJECT_ID", "store-extract")
-STORAGE_BUCKET = os.environ.get("STORAGE_BUCKET", f"{PROJECT_ID}.appspot.com")
+STORAGE_BUCKET = os.environ.get(
+    "STORAGE_BUCKET",
+    f"{PROJECT_ID}.firebasestorage.app",
+)
 
 # Pub/Sub topic name for pipeline trigger
 PIPELINE_TOPIC = os.environ.get("PIPELINE_TOPIC", "run-pipeline")

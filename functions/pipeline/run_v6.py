@@ -41,7 +41,7 @@ from status_check import run_tier1
 # `apply_tier3` (which is generic — flags every still-unclassified store as
 # "يحتاج تحقق ميداني") is safe to reuse across jobs.
 from finalize_v6 import apply_tier3
-from auto_review import auto_review
+from auto_review import auto_review, multimodal_verify
 from exporter_v6 import export_excel_v6
 
 
@@ -140,6 +140,24 @@ def main():
     _save(out_dir / 'stores_merged.json', stores)
     log(f"saved stores_merged.json ({len(stores)} unique)")
 
+    # A separate targeted visual pass validates the first Gemini extraction.
+    # Run it for every candidate (including prospective Tier 1 matches) so a
+    # Places result can enrich a visible store but can never create one.
+    log("\n--- STAGE 13B: Independent visual verification ---")
+    signs_dir = out_dir / "signs"
+    multimodal_verify(stores, signs_dir, log_fn=log)
+    before_visual_filter = len(stores)
+    stores = [
+        store for store in stores
+        if not store.get('excluded_from_results')
+        and store.get('source_visible_in_video') is True
+        and (store.get('visual_evidence') or {}).get('verified')
+    ]
+    log(
+        f"visual verification kept {len(stores)}/{before_visual_filter}; "
+        f"excluded {before_visual_filter - len(stores)} non-store/non-visible candidates"
+    )
+
     # ---- STAGE 14: Tier 1 — Google Places Details ----
     log("\n--- STAGE 14: Tier 1 status check ---")
     if args.skip_status:
@@ -162,12 +180,23 @@ def main():
 
     # ---- STAGE 17: Auto-review of Tier 3 ----
     log("\n--- STAGE 17: Auto-Review ---")
-    signs_dir = out_dir / "signs"
     stores = auto_review(stores, log_fn=log, signs_dir=signs_dir)
 
     # ---- Location enrichment (source, accuracy, place_id) ----
     log("\n--- Enriching location metadata ---")
     stores = enrich_location_meta(stores)
+
+    # Rejected candidates are useful during processing but must never appear
+    # as extracted stores or be eligible for a later database push.
+    before_final_filter = len(stores)
+    stores = [
+        store for store in stores
+        if not store.get('excluded_from_results')
+        and (store.get('auto_review') or {}).get('decision') != 'auto_rejected'
+        and store.get('source_visible_in_video') is True
+        and (store.get('visual_evidence') or {}).get('verified')
+    ]
+    log(f"final evidence filter kept {len(stores)}/{before_final_filter} stores")
 
     final_json = out_dir / 'stores_v6_final.json'
     _save(final_json, stores)

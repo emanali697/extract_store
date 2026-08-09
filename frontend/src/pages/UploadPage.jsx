@@ -2,6 +2,8 @@ import { useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAppStore } from '../store/appStore'
 import {
+  abortMultipartUpload,
+  completeMultipartUpload,
   createJob,
   isLocalBackend,
   startJob,
@@ -18,9 +20,23 @@ function humanSize(bytes) {
   return mb < 1024 ? `${mb.toFixed(1)} MB` : `${(mb / 1024).toFixed(2)} GB`
 }
 
+function humanSpeed(bytesPerSecond) {
+  if (!bytesPerSecond) return 'جارٍ القياس...'
+  return `${((bytesPerSecond * 8) / 1_000_000).toFixed(2)} Mbps`
+}
+
+function humanDuration(seconds) {
+  if (!Number.isFinite(seconds)) return 'جارٍ الحساب...'
+  const rounded = Math.max(0, Math.round(seconds))
+  const minutes = Math.floor(rounded / 60)
+  const rest = rounded % 60
+  return minutes ? `${minutes} د ${rest} ث` : `${rest} ثانية`
+}
+
 export default function UploadPage() {
   const navigate = useNavigate()
   const inputRef = useRef(null)
+  const uploadHandleRef = useRef(null)
   const {
     videoFile, videoName, videoSizeMb,
     uploadStatus, uploadProgress, uploadError,
@@ -34,10 +50,14 @@ export default function UploadPage() {
   const [error, setError] = useState('')
   const [starting, setStarting] = useState(false)
   const [startStep, setStartStep] = useState('')
+  const [uploadMetrics, setUploadMetrics] = useState(null)
+  const [uploadPaused, setUploadPaused] = useState(false)
 
   const handleFile = (file) => {
     if (!file) return
     setError('')
+    setUploadMetrics(null)
+    setUploadPaused(false)
     if (file.size > MAX_BYTES) {
       setError(`الفيديو أكبر من 5 GB (الحجم الحالي: ${humanSize(file.size)})`)
       return
@@ -58,6 +78,7 @@ export default function UploadPage() {
   const canStart = !!videoFile && !!streetName.trim() && !starting
 
   const handleStart = async () => {
+    let cloudJobId = null
     setError('')
     setStarting(true)
     setStartStep('creating')
@@ -72,7 +93,10 @@ export default function UploadPage() {
         setStartStep('uploading')
         setUploadStatus('uploading')
         const uploaded = await uploadVideoToBackend(videoFile, {
-          onProgress: (pct) => setUploadProgress(pct),
+          onProgress: (details) => {
+            setUploadProgress(details.progress)
+            setUploadMetrics(details)
+          },
         })
         setUploadStatus('done')
 
@@ -101,13 +125,23 @@ export default function UploadPage() {
         enablePlaces,
         enableStatus,
       })
+      cloudJobId = jobId
 
       // 2. Upload video to Firebase Storage
       setStartStep('uploading')
       setUploadStatus('uploading')
-      await uploadVideoToStorage(videoFile, jobId, {
-        onProgress: (pct) => setUploadProgress(pct),
+      const uploadHandle = uploadVideoToStorage(videoFile, jobId, {
+        onProgress: (details) => {
+          setUploadProgress(details.progress)
+          setUploadMetrics(details)
+        },
       })
+      uploadHandleRef.current = uploadHandle
+      const uploadResult = await uploadHandle
+      if (uploadResult.multipart) {
+        setStartStep('finalizing-upload')
+        await completeMultipartUpload(jobId, uploadResult.partCount)
+      }
       setUploadStatus('done')
 
       // 3. Start the pipeline
@@ -116,10 +150,18 @@ export default function UploadPage() {
       startAnalysis(jobId)
       navigate('/progress')
     } catch (e) {
+      if (cloudJobId && !isLocalBackend) {
+        try {
+          await abortMultipartUpload(cloudJobId)
+        } catch {
+          // Preserve the original upload/start error shown to the user.
+        }
+      }
       const msg = e?.response?.data?.detail || e?.message || 'فشل بدء التحليل'
       setError(msg)
       setUploadStatus('error', msg)
     } finally {
+      uploadHandleRef.current = null
       setStarting(false)
       setStartStep('')
     }
@@ -192,6 +234,34 @@ export default function UploadPage() {
                   style={{ width: `${uploadProgress * 100}%` }}
                 />
               </div>
+              {uploadMetrics && (
+                <div className="d-flex flex-wrap gap-3 mt-2 small text-muted align-items-center">
+                  <span>
+                    <i className="bi bi-speedometer2 me-1"></i>
+                    السرعة: <span className="num-ltr">{humanSpeed(uploadMetrics.speedBps)}</span>
+                  </span>
+                  <span>
+                    <i className="bi bi-clock me-1"></i>
+                    المتبقي: <span className="num-ltr">{humanDuration(uploadMetrics.etaSeconds)}</span>
+                  </span>
+                  <span className="num-ltr">
+                    {humanSize(uploadMetrics.bytesTransferred)} / {humanSize(uploadMetrics.totalBytes)}
+                  </span>
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-outline-secondary py-0"
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      if (uploadPaused) uploadHandleRef.current?.resume?.()
+                      else uploadHandleRef.current?.pause?.()
+                      setUploadPaused(!uploadPaused)
+                    }}
+                  >
+                    <i className={`bi ${uploadPaused ? 'bi-play-fill' : 'bi-pause-fill'} me-1`}></i>
+                    {uploadPaused ? 'استكمال' : 'إيقاف مؤقت'}
+                  </button>
+                </div>
+              )}
             </>
           )}
 
@@ -235,6 +305,7 @@ export default function UploadPage() {
             <>
               <span className="spinner-border spinner-border-sm me-2" />
               {startStep === 'uploading' && 'جاري رفع الفيديو كاملًا...'}
+              {startStep === 'finalizing-upload' && 'تم الرفع — جاري تجميع أجزاء الفيديو...'}
               {startStep === 'starting' && 'تم الرفع — جاري بدء التحليل...'}
               {startStep === 'creating' && 'جاري تجهيز مهمة التحليل...'}
             </>
