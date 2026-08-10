@@ -8,6 +8,27 @@ const initialStageStatus = () =>
 const initialStageProgress = () =>
   Object.fromEntries(STAGES.map((_, i) => [i, null]))
 
+function storeIdForReview(itemOrId) {
+  const value = typeof itemOrId === 'object'
+    ? (itemOrId?.storeId ?? itemOrId?.id)
+    : itemOrId
+  const reviewMatch = String(value ?? '').match(/^r(\d+)$/)
+  return reviewMatch ? Number(reviewMatch[1]) : value
+}
+
+function summarizeStores(previousSummary = {}, stores = [], reviewCount = 0) {
+  return {
+    ...previousSummary,
+    total: stores.length,
+    active: stores.filter((store) => (
+      Number(store.tier) === 1 || String(store.status || '').includes('نشط')
+    )).length,
+    phones: stores.filter((store) => String(store.phone || '').trim()).length,
+    precise: stores.filter((store) => store.lat != null || store.lng != null).length,
+    needs_human: reviewCount,
+  }
+}
+
 export const useAppStore = create(
   persist(
     (set, get) => ({
@@ -121,15 +142,59 @@ export const useAppStore = create(
         set({ analysisDone: true, analysisStatus: status, analysisError: '', results }),
 
       setReviewItems: (items) => set({ reviewItems: items }),
-      approveReviewItem: (id, edited) => {
-        const reviewItems = get().reviewItems.filter((it) => it.id !== id)
-        const approvedItems = [...get().approvedItems, edited]
-        set({ reviewItems, approvedItems })
-      },
-      rejectReviewItem: (id) => {
-        const reviewItems = get().reviewItems.filter((it) => it.id !== id)
-        set({ reviewItems })
-      },
+      approveReviewItem: (id, edited) => set((state) => {
+        const storeId = storeIdForReview(edited?.storeId ?? id)
+        const reviewItems = state.reviewItems.filter((item) => item.id !== id)
+        const stores = (state.results?.stores ?? []).map((store) => {
+          if (String(store.id) !== String(storeId)) return store
+          return {
+            ...store,
+            name: edited.name,
+            name_ar: edited.name,
+            category: edited.category,
+            phone: edited.phone,
+            approved: true,
+            edited: Boolean(edited.edited),
+          }
+        })
+        const approvedStore = stores.find(
+          (store) => String(store.id) === String(storeId)
+        ) ?? { ...edited, id: storeId }
+        const approvedItems = [
+          ...state.approvedItems.filter(
+            (item) => String(storeIdForReview(item)) !== String(storeId)
+          ),
+          approvedStore,
+        ]
+        const results = state.results
+          ? {
+              ...state.results,
+              stores,
+              review: reviewItems,
+              summary: summarizeStores(state.results.summary, stores, reviewItems.length),
+            }
+          : state.results
+        return { reviewItems, approvedItems, results }
+      }),
+      rejectReviewItem: (id) => set((state) => {
+        const storeId = storeIdForReview(id)
+        const reviewItems = state.reviewItems.filter((item) => item.id !== id)
+        const stores = (state.results?.stores ?? []).filter(
+          (store) => String(store.id) !== String(storeId)
+        )
+        const approvedItems = state.approvedItems.filter(
+          (item) => String(storeIdForReview(item)) !== String(storeId)
+        )
+        const results = state.results
+          ? {
+              ...state.results,
+              stores,
+              review: reviewItems,
+              summary: summarizeStores(state.results.summary, stores, reviewItems.length),
+            }
+          : state.results
+        return { reviewItems, approvedItems, results }
+      }),
 
       resetAll: () =>
         set({
