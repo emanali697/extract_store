@@ -1,6 +1,6 @@
 import { initializeApp, getApps } from 'firebase/app'
 import { getStorage } from 'firebase/storage'
-import { getFirestore } from 'firebase/firestore'
+import { getFirestore, initializeFirestore } from 'firebase/firestore'
 
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
@@ -18,4 +18,17 @@ export const firebaseApp = firebaseReady
   : null
 
 export const firebaseStorage = firebaseApp ? getStorage(firebaseApp) : null
-export const firebaseFirestore = firebaseApp ? getFirestore(firebaseApp) : null
+
+function createFirestore(app) {
+  try {
+    return initializeFirestore(app, {
+      experimentalForceLongPolling: true,
+    })
+  } catch (error) {
+    // Vite HMR can reuse an instance initialized by the previous module load.
+    if (error?.code === 'failed-precondition') return getFirestore(app)
+    throw error
+  }
+}
+
+export const firebaseFirestore = firebaseApp ? createFirestore(firebaseApp) : null
