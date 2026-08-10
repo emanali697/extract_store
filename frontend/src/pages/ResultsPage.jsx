@@ -18,6 +18,12 @@ const SRC_LABEL = {
   unknown: '—',
 }
 
+function reviewedStoreId(item) {
+  const value = item?.storeId ?? item?.id
+  const reviewMatch = String(value ?? '').match(/^r(\d+)$/)
+  return reviewMatch ? reviewMatch[1] : String(value ?? '')
+}
+
 export default function ResultsPage() {
   const navigate = useNavigate()
   const { jobId, analysisDone, results, approvedItems, resetAll } = useAppStore()
@@ -49,8 +55,40 @@ export default function ResultsPage() {
     }).catch(() => { setFbReady(false); setTradersReady(false) })
   }, [])
 
-  const stores = useMemo(() => results?.stores ?? [], [results])
-  const summary = results?.summary ?? { total: 0, active: 0, phones: 0, precise: 0 }
+  const stores = useMemo(() => {
+    const originalStores = results?.stores ?? []
+    if (!approvedItems.length) return originalStores
+
+    const reviewedById = new Map(
+      approvedItems.map((item) => [reviewedStoreId(item), item])
+    )
+    return originalStores.map((store) => {
+      const reviewed = reviewedById.get(String(store.id))
+      if (!reviewed) return store
+      const reviewedName = reviewed.name
+        || reviewed.multimodalName
+        || reviewed.suggestedName
+        || store.name
+      return {
+        ...store,
+        name: reviewedName,
+        name_ar: reviewedName,
+        category: reviewed.category ?? store.category,
+        phone: reviewed.phone ?? store.phone,
+        approved: true,
+        edited: Boolean(reviewed.edited),
+      }
+    })
+  }, [approvedItems, results])
+  const summary = useMemo(() => ({
+    ...(results?.summary ?? {}),
+    total: stores.length,
+    active: stores.filter((store) => (
+      Number(store.tier) === 1 || String(store.status || '').includes('نشط')
+    )).length,
+    phones: stores.filter((store) => String(store.phone || '').trim()).length,
+    precise: stores.filter((store) => store.lat != null || store.lng != null).length,
+  }), [results?.summary, stores])
 
   const eligibleForTraders = useMemo(
     () => stores.filter(s => s.auto_review_decision !== 'auto_rejected'),
@@ -112,8 +150,9 @@ export default function ResultsPage() {
     setPushResult(null)
     try {
       // Push approved stores if any, otherwise tier-1 stores by default
-      const toPush = approvedItems.length
-        ? approvedItems
+      const approvedStoreIds = new Set(approvedItems.map(reviewedStoreId))
+      const toPush = approvedStoreIds.size
+        ? stores.filter((store) => approvedStoreIds.has(String(store.id)))
         : stores.filter((s) => s.tier <= 2)
       const res = await approveStores(jobId, toPush)
       setPushResult(res)
