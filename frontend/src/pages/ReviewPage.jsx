@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import Modal from 'react-bootstrap/Modal'
 import { useAppStore } from '../store/appStore'
 import { getSignImageUrl } from '../services/api'
 
@@ -9,6 +10,7 @@ function ReviewCard({ item, jobId, onApprove, onReject }) {
   const [signSrc, setSignSrc] = useState(
     item.signImageUrl?.startsWith('http') ? item.signImageUrl : null
   )
+  const [imageOpen, setImageOpen] = useState(false)
 
   const confPct = Math.round((item.confidence ?? 0) * 100)
   const confClass = confPct >= 70 ? 'success' : confPct >= 50 ? 'warning' : 'danger'
@@ -32,9 +34,46 @@ function ReviewCard({ item, jobId, onApprove, onReject }) {
         <div className="col-md-4">
           <div className="sign-thumb">
             {signSrc
-              ? <img src={signSrc} alt={item.suggestedName} style={{ width: '100%', height: '100%', objectFit: 'contain', borderRadius: 10, background: '#000' }} />
+              ? (
+                  <button
+                    type="button"
+                    className="btn border-0 bg-transparent p-0 w-100 h-100"
+                    onClick={() => setImageOpen(true)}
+                    aria-label="تكبير صورة لوحة المتجر"
+                    title="اضغط لتكبير الصورة"
+                    style={{ cursor: 'zoom-in' }}
+                  >
+                    <img
+                      src={signSrc}
+                      alt={item.suggestedName}
+                      style={{ width: '100%', height: '100%', objectFit: 'contain', borderRadius: 10, background: '#000' }}
+                    />
+                  </button>
+                )
               : <i className="bi bi-image"></i>}
           </div>
+
+          <Modal
+            show={imageOpen && Boolean(signSrc)}
+            onHide={() => setImageOpen(false)}
+            size="xl"
+            centered
+          >
+            <Modal.Header closeButton className="bg-dark text-white border-secondary">
+              <Modal.Title className="fs-6">
+                <i className="bi bi-zoom-in me-2"></i>
+                {name || item.suggestedName}
+              </Modal.Title>
+            </Modal.Header>
+            <Modal.Body className="bg-dark p-2 text-center">
+              <img
+                src={signSrc || ''}
+                alt={name || item.suggestedName}
+                className="img-fluid"
+                style={{ maxHeight: '82vh', objectFit: 'contain' }}
+              />
+            </Modal.Body>
+          </Modal>
 
           {item.multimodalName && item.multimodalName !== item.suggestedName && (
             <div className="alert alert-info small mt-2 mb-0 py-2">
