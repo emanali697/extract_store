@@ -12,7 +12,7 @@ if sys.platform == "win32":
 from fastapi import FastAPI, UploadFile, File, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from config import (
     UPLOAD_DIR,
@@ -62,6 +62,11 @@ class JobSettings(BaseModel):
 
 class ApproveRequest(BaseModel):
     stores: list[dict]
+
+
+class ReviewDecisionRequest(BaseModel):
+    action: str
+    store: dict = Field(default_factory=dict)
 
 
 def _job_to_dict(job: Job, *, include_results: bool = True) -> dict:
@@ -174,6 +179,78 @@ def job_review(job_id: str):
         return job.results.get("review", [])
     data = asyncio.run(_read_results(job))
     return data.get("review", [])
+
+
+@app.post("/jobs/{job_id}/review/{review_id}")
+def save_job_review(job_id: str, review_id: str, body: ReviewDecisionRequest):
+    """Persist review edits in the same results object used by ResultsPage."""
+    job = manager.get(job_id)
+    if not job:
+        raise HTTPException(404, "job not found")
+    if not job.results:
+        raise HTTPException(404, "results not ready")
+    if body.action not in ("approve", "reject"):
+        raise HTTPException(400, "action must be approve or reject")
+
+    results = dict(job.results)
+    stores = [dict(store) for store in (results.get("stores") or [])]
+    review = [dict(item) for item in (results.get("review") or [])]
+    review_item = next(
+        (item for item in review if str(item.get("id")) == review_id),
+        None,
+    )
+    store_id = (review_item or {}).get("storeId")
+    if store_id is None and review_id.startswith("r") and review_id[1:].isdigit():
+        store_id = int(review_id[1:])
+    if store_id is None:
+        raise HTTPException(409, "review item is not linked to a result store")
+
+    matching_index = next(
+        (
+            index for index, store in enumerate(stores)
+            if str(store.get("id")) == str(store_id)
+        ),
+        None,
+    )
+    if matching_index is None and body.action == "approve":
+        raise HTTPException(409, "result store not found")
+
+    if body.action == "approve" and matching_index is not None:
+        name = str(body.store.get("name") or "").strip()
+        if not name:
+            raise HTTPException(400, "store name is required")
+        stores[matching_index].update({
+            "name": name,
+            "name_ar": name,
+            "category": str(body.store.get("category") or "").strip(),
+            "phone": str(body.store.get("phone") or "").strip(),
+            "approved": True,
+            "edited": True,
+            "review_status": "approved",
+        })
+    elif body.action == "reject" and matching_index is not None:
+        stores.pop(matching_index)
+
+    review = [item for item in review if str(item.get("id")) != review_id]
+    summary = dict(results.get("summary") or {})
+    summary.update({
+        "total": len(stores),
+        "active": sum(
+            1 for store in stores
+            if int(store.get("tier") or 0) == 1
+            or "نشط" in str(store.get("status") or "")
+        ),
+        "phones": sum(1 for store in stores if str(store.get("phone") or "").strip()),
+        "precise": sum(
+            1 for store in stores
+            if store.get("lat") is not None or store.get("lng") is not None
+        ),
+        "needs_human": len(review),
+    })
+    results.update({"stores": stores, "review": review, "summary": summary})
+    job.results = results
+    manager.persist(job)
+    return {"saved": True, "results": results}
 
 
 @app.post("/jobs/{job_id}/approve")

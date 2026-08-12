@@ -116,7 +116,7 @@ export default function UploadPage() {
       }
 
       // 1. Create job first so we know the jobId
-      const { jobId } = await createJob({
+      const { jobId, reviewToken } = await createJob({
         videoName,
         streetName,
         city,
@@ -147,7 +147,7 @@ export default function UploadPage() {
       // 3. Start the pipeline
       setStartStep('starting')
       await startJob({ jobId })
-      startAnalysis(jobId)
+      startAnalysis(jobId, reviewToken)
       navigate('/progress')
     } catch (e) {
       if (cloudJobId && !isLocalBackend) {

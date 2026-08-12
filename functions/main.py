@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import json
 import os
+import secrets
 import shutil
 import tempfile
 import csv
@@ -37,6 +39,7 @@ from db import (
     list_jobs,
     persist_job,
     job_to_dict,
+    save_review_decision,
 )
 from storage import (
     compose_video_parts,
@@ -129,6 +132,7 @@ def create_job(req: https_fn.Request) -> https_fn.Response:
         return _error_response("method not allowed", status=405, origin=origin)
 
     payload = _get_json(req)
+    review_token = secrets.token_urlsafe(32)
     job = Job(
         job_id=firestore.client().collection(JOBS_COLLECTION).document().id[:12],
         video_name=payload.get("videoName", ""),
@@ -139,9 +143,14 @@ def create_job(req: https_fn.Request) -> https_fn.Response:
         enable_places=payload.get("enablePlaces", True),
         enable_status=payload.get("enableStatus", True),
         status="uploading",
+        review_token_hash=hashlib.sha256(review_token.encode("utf-8")).hexdigest(),
     )
     db_create_job(job)
-    return _json_response({"jobId": job.job_id, "status": job.status}, origin=origin)
+    return _json_response({
+        "jobId": job.job_id,
+        "status": job.status,
+        "reviewToken": review_token,
+    }, origin=origin)
 
 
 @https_fn.on_request()
@@ -322,6 +331,42 @@ def get_review(req: https_fn.Request) -> https_fn.Response:
     if job.results:
         return _json_response(job.results.get("review", []), origin=origin)
     return _json_response([], origin=origin)
+
+
+@https_fn.on_request(invoker="public")
+def save_review(req: https_fn.Request) -> https_fn.Response:
+    """Permanently replace or reject one reviewed store in job results."""
+    origin = _get_origin(req)
+    if req.method == "OPTIONS":
+        return _json_response({}, origin=origin)
+    if req.method != "POST":
+        return _error_response("method not allowed", status=405, origin=origin)
+
+    job_id = req.path.split("/")[-1]
+    payload = _get_json(req)
+    review_id = str(payload.get("reviewId") or "").strip()
+    action = str(payload.get("action") or "").strip()
+    review_token = str(payload.get("reviewToken") or "")
+    if not review_id:
+        return _error_response("reviewId is required", origin=origin)
+    if action not in ("approve", "reject"):
+        return _error_response("action must be approve or reject", origin=origin)
+
+    try:
+        results = save_review_decision(
+            job_id,
+            review_id,
+            action,
+            review_token,
+            payload.get("store") or {},
+        )
+    except PermissionError as exc:
+        return _error_response(str(exc), status=403, origin=origin)
+    except ValueError as exc:
+        return _error_response(str(exc), status=409, origin=origin)
+    if results is None:
+        return _error_response("job not found", status=404, origin=origin)
+    return _json_response({"saved": True, "results": results}, origin=origin)
 
 
 @https_fn.on_request()

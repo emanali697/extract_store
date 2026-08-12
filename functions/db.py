@@ -4,6 +4,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 from datetime import datetime, timezone
+import hashlib
+import hmac
 
 from firebase_admin import firestore
 from google.cloud import firestore as firestore_client
@@ -37,6 +39,7 @@ class Job:
     stages: dict[int, dict] = field(default_factory=dict)
     log_lines: list[str] = field(default_factory=list)
     results: dict | None = None
+    review_token_hash: str = ""
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
@@ -63,6 +66,7 @@ def _job_to_doc(job: Job) -> dict[str, Any]:
         "stages": {str(k): v for k, v in job.stages.items()},
         "log_lines": job.log_lines[-500:] if job.log_lines else [],  # keep last 500
         "results": job.results,
+        "review_token_hash": job.review_token_hash,
         "created_at": job.created_at or _now(),
         "updated_at": _now(),
     }
@@ -87,6 +91,7 @@ def _doc_to_job(doc: dict[str, Any]) -> Job:
         stages={int(k): v for k, v in stages.items()} if stages else {},
         log_lines=list(doc.get("log_lines", [])),
         results=doc.get("results"),
+        review_token_hash=doc.get("review_token_hash", ""),
         created_at=doc.get("created_at"),
         updated_at=doc.get("updated_at"),
     )
@@ -117,6 +122,103 @@ def get_job(job_id: str) -> Job | None:
     if not doc.exists:
         return None
     return _doc_to_job(doc.to_dict())
+
+
+def save_review_decision(
+    job_id: str,
+    review_id: str,
+    action: str,
+    review_token: str,
+    updates: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Persist a human review decision in the canonical job results.
+
+    The review queue and results table live in the same Firestore document, so
+    changing both in one transaction prevents the old extracted value from
+    reappearing after a refresh.
+    """
+    db = get_db()
+    ref = db.collection(JOBS_COLLECTION).document(job_id)
+    transaction = db.transaction()
+
+    @firestore_client.transactional
+    def _save(txn):
+        snapshot = ref.get(transaction=txn)
+        if not snapshot.exists:
+            return None
+
+        document = snapshot.to_dict() or {}
+        expected_token_hash = str(document.get("review_token_hash") or "")
+        supplied_token_hash = hashlib.sha256(review_token.encode("utf-8")).hexdigest()
+        if not expected_token_hash or not hmac.compare_digest(
+            expected_token_hash,
+            supplied_token_hash,
+        ):
+            raise PermissionError("invalid review authorization")
+
+        results = dict(document.get("results") or {})
+        stores = [dict(store) for store in (results.get("stores") or [])]
+        review = [dict(item) for item in (results.get("review") or [])]
+
+        review_item = next(
+            (item for item in review if str(item.get("id")) == review_id),
+            None,
+        )
+        store_id = (review_item or {}).get("storeId")
+        if store_id is None and review_id.startswith("r") and review_id[1:].isdigit():
+            store_id = int(review_id[1:])
+        if store_id is None:
+            raise ValueError("review item is not linked to a result store")
+
+        matching_index = next(
+            (
+                index for index, store in enumerate(stores)
+                if str(store.get("id")) == str(store_id)
+            ),
+            None,
+        )
+        if matching_index is None and action == "approve":
+            raise ValueError("result store not found")
+
+        if action == "approve" and matching_index is not None:
+            values = updates or {}
+            name = str(values.get("name") or "").strip()
+            if not name:
+                raise ValueError("store name is required")
+            store = stores[matching_index]
+            store.update({
+                "name": name,
+                "name_ar": name,
+                "category": str(values.get("category") or "").strip(),
+                "phone": str(values.get("phone") or "").strip(),
+                "approved": True,
+                "edited": True,
+                "review_status": "approved",
+            })
+        elif action == "reject" and matching_index is not None:
+            stores.pop(matching_index)
+
+        review = [item for item in review if str(item.get("id")) != review_id]
+        summary = dict(results.get("summary") or {})
+        summary.update({
+            "total": len(stores),
+            "active": sum(
+                1 for store in stores
+                if int(store.get("tier") or 0) == 1
+                or "نشط" in str(store.get("status") or "")
+            ),
+            "phones": sum(1 for store in stores if str(store.get("phone") or "").strip()),
+            "precise": sum(
+                1 for store in stores
+                if store.get("lat") is not None or store.get("lng") is not None
+            ),
+            "needs_human": len(review),
+        })
+        results.update({"stores": stores, "review": review, "summary": summary})
+        txn.update(ref, {"results": results, "updated_at": _now()})
+        return results
+
+    return _save(transaction)
 
 
 def claim_queued_job(job_id: str) -> Job | None:

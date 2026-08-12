@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react'
 import Modal from 'react-bootstrap/Modal'
 import { useAppStore } from '../store/appStore'
-import { getSignImageUrl } from '../services/api'
+import { getSignImageUrl, saveReviewDecision } from '../services/api'
 
-function ReviewCard({ item, jobId, onApprove, onReject }) {
+function ReviewCard({ item, jobId, onApprove, onReject, saving }) {
   const [name, setName] = useState(item.multimodalName || item.suggestedName)
   const [category, setCategory] = useState(item.category)
   const [phone, setPhone] = useState(item.phone || '')
@@ -145,17 +145,25 @@ function ReviewCard({ item, jobId, onApprove, onReject }) {
           <div className="d-flex gap-2 mt-3 flex-wrap">
             <button
               className="btn btn-success"
+              disabled={saving}
               onClick={() => onApprove({ ...item, name, category, phone, approved: true })}
             >
-              <i className="bi bi-check-lg me-1"></i> موافق وأرسل
+              {saving
+                ? <><span className="spinner-border spinner-border-sm me-1" /> جاري الحفظ...</>
+                : <><i className="bi bi-check-lg me-1"></i> موافق وأرسل</>}
             </button>
             <button
               className="btn btn-outline-secondary"
+              disabled={saving}
               onClick={() => onApprove({ ...item, name, category, phone, approved: true, edited: true })}
             >
               <i className="bi bi-pencil me-1"></i> حفظ التعديل
             </button>
-            <button className="btn btn-outline-danger" onClick={() => onReject(item.id)}>
+            <button
+              className="btn btn-outline-danger"
+              disabled={saving}
+              onClick={() => onReject(item.id)}
+            >
               <i className="bi bi-trash me-1"></i> حذف
             </button>
           </div>
@@ -167,9 +175,49 @@ function ReviewCard({ item, jobId, onApprove, onReject }) {
 
 export default function ReviewPage() {
   const {
-    jobId, analysisDone, reviewItems, approvedItems, results,
-    approveReviewItem, rejectReviewItem,
+    jobId, reviewToken, analysisDone, analysisStatus, reviewItems, approvedItems, results,
+    approveReviewItem, rejectReviewItem, finishAnalysis, setReviewItems,
   } = useAppStore()
+  const [savingId, setSavingId] = useState(null)
+  const [saveError, setSaveError] = useState('')
+
+  const handleApprove = async (id, edited) => {
+    setSavingId(id)
+    setSaveError('')
+    try {
+      const response = await saveReviewDecision(jobId, reviewToken, id, 'approve', edited)
+      approveReviewItem(id, edited)
+      finishAnalysis(response.results, analysisStatus || 'done')
+      setReviewItems(response.results?.review ?? [])
+    } catch (error) {
+      setSaveError(
+        error?.response?.data?.detail
+        || error?.message
+        || 'تعذر حفظ تعديل المتجر'
+      )
+    } finally {
+      setSavingId(null)
+    }
+  }
+
+  const handleReject = async (id) => {
+    setSavingId(id)
+    setSaveError('')
+    try {
+      const response = await saveReviewDecision(jobId, reviewToken, id, 'reject')
+      rejectReviewItem(id)
+      finishAnalysis(response.results, analysisStatus || 'done')
+      setReviewItems(response.results?.review ?? [])
+    } catch (error) {
+      setSaveError(
+        error?.response?.data?.detail
+        || error?.message
+        || 'تعذر حذف المتجر من النتائج'
+      )
+    } finally {
+      setSavingId(null)
+    }
+  }
 
   const summary = results?.summary ?? {}
   const autoPassed = summary.auto_passed ?? 0
@@ -189,6 +237,13 @@ export default function ReviewPage() {
       <h2 className="section-title">
         <i className="bi bi-clipboard-check me-2"></i> مراجعة المتاجر المشكوك فيها
       </h2>
+
+      {saveError && (
+        <div className="alert alert-danger" role="alert">
+          <i className="bi bi-exclamation-triangle me-2"></i>
+          {saveError}
+        </div>
+      )}
 
       {(autoPassed > 0 || autoRejected > 0) && (
         <div className="alert alert-info border-0 shadow-sm small mb-3">
@@ -241,8 +296,9 @@ export default function ReviewPage() {
               key={item.id}
               item={item}
               jobId={jobId}
-              onApprove={(edited) => approveReviewItem(item.id, edited)}
-              onReject={rejectReviewItem}
+              saving={savingId === item.id}
+              onApprove={(edited) => handleApprove(item.id, edited)}
+              onReject={handleReject}
             />
           ))}
         </div>
