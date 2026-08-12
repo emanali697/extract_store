@@ -5,6 +5,7 @@ import asyncio
 import json
 import sys
 from datetime import datetime
+from pathlib import Path
 
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
@@ -33,6 +34,7 @@ def _pipeline_status() -> dict:
 
 from jobs import manager, Job
 from runner import run_pipeline, _read_results
+from excel_export import write_results_excel
 import firebase_service
 import traders_firebase_service
 
@@ -314,17 +316,25 @@ def export_csv(job_id: str):
 
 @app.get("/jobs/{job_id}/excel")
 def download_excel(job_id: str):
-    from pathlib import Path
     job = manager.get(job_id)
     if not job:
         raise HTTPException(404, "job not found")
-    out = Path(job.output_dir)
-    for fname in ("stores_v6_final.xlsx", "stores_final.xlsx"):
-        p = out / fname
-        if p.exists():
-            return FileResponse(p, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                filename=p.name)
-    raise HTTPException(404, "excel not ready")
+    if not job.results:
+        raise HTTPException(404, "results not ready")
+    path = Path(job.output_dir) / "stores_reviewed.xlsx"
+    try:
+        write_results_excel(
+            job.results.get("stores", []),
+            path,
+            job_id=job_id,
+        )
+    except Exception as exc:
+        raise HTTPException(500, f"failed to create excel: {exc}")
+    return FileResponse(
+        path,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        filename=f"stores_{job_id}_reviewed.xlsx",
+    )
 
 
 @app.get("/jobs/{job_id}/sign/{filename}")
