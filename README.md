@@ -1,5 +1,7 @@
 # دليل استخدام Store Extractor
 
+> تطوير المشروع يتبع الآن **Specification-Driven Development**. قبل أي feature أو bug fix أو refactor، ابدأ من [SDD.md](SDD.md) وأنشئ مهمة داخل `.tasks/`.
+
 تطبيق ويب لاستخراج بيانات المتاجر والمحلات من فيديوهات كاميرا السيارة (Dashcam).
 
 ## المقدمة
