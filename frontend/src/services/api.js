@@ -86,9 +86,6 @@ export async function fetchReviewQueue(jobId) {
 }
 
 export async function saveReviewDecision(jobId, reviewToken, reviewId, action, store = {}) {
-  if (!isLocalBackend && !reviewToken) {
-    throw new Error('هذه المهمة أُنشئت قبل إضافة الحفظ الآمن. شغّلي تحليلًا جديدًا لحفظ تعديلات المراجعة بشكل دائم.')
-  }
   const endpoint = isLocalBackend
     ? `/jobs/${jobId}/review/${encodeURIComponent(reviewId)}`
     : `/save_review/${jobId}`

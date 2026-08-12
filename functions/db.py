@@ -150,9 +150,11 @@ def save_review_decision(
         document = snapshot.to_dict() or {}
         expected_token_hash = str(document.get("review_token_hash") or "")
         supplied_token_hash = hashlib.sha256(review_token.encode("utf-8")).hexdigest()
-        if not expected_token_hash or not hmac.compare_digest(
-            expected_token_hash,
-            supplied_token_hash,
+        # Temporary legacy compatibility: jobs created before review tokens
+        # existed have no hash and may be edited during the current trial.
+        # New jobs remain protected and still require their exact token.
+        if expected_token_hash and not hmac.compare_digest(
+            expected_token_hash, supplied_token_hash
         ):
             raise PermissionError("invalid review authorization")
 
