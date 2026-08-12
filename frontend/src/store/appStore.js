@@ -51,6 +51,7 @@ export const useAppStore = create(
 
       // analysis
       jobId: null,
+      reviewToken: '',
       analysisStarted: false,
       analysisDone: false,
       analysisStatus: 'idle',
@@ -83,9 +84,10 @@ export const useAppStore = create(
       setUploadStatus: (status, error = '') => set({ uploadStatus: status, uploadError: error }),
       setVideoPath: (path) => set({ videoPath: path, uploadStatus: 'done' }),
 
-      startAnalysis: (jobId) =>
+      startAnalysis: (jobId, reviewToken = '') =>
         set({
           jobId,
+          reviewToken,
           analysisStarted: true,
           analysisDone: false,
           analysisStatus: 'queued',
@@ -101,6 +103,7 @@ export const useAppStore = create(
       resumeJob: ({ jobId, status, videoName, streetName, city, district }) =>
         set((prev) => ({
           jobId,
+          reviewToken: prev.jobId === jobId ? prev.reviewToken : '',
           analysisStarted: true,
           analysisDone: status === 'done' || status === 'partial',
           analysisStatus: status,
@@ -206,6 +209,7 @@ export const useAppStore = create(
           uploadStatus: 'idle',
           uploadError: '',
           jobId: null,
+          reviewToken: '',
           analysisStarted: false,
           analysisDone: false,
           analysisStatus: 'idle',
@@ -235,6 +239,7 @@ export const useAppStore = create(
         enableStatus: state.enableStatus,
 
         jobId: state.jobId,
+        reviewToken: state.reviewToken,
         analysisStarted: state.analysisStarted,
         analysisDone: state.analysisDone,
         analysisStatus: state.analysisStatus,
