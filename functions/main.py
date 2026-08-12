@@ -53,6 +53,7 @@ from storage import (
     video_path,
 )
 from runner import run_pipeline as run_pipeline_async
+from excel_export import write_results_excel
 
 # Initialize Firebase Admin SDK once using the runtime service account.
 try:
@@ -471,12 +472,35 @@ def export_excel(req: https_fn.Request) -> https_fn.Response:
         return _json_response({}, origin=origin)
 
     job_id = req.path.split("/")[-1]
-    for fname in ("stores_v6_final.xlsx", "stores_final.xlsx"):
-        storage_path = f"jobs/{job_id}/outputs/{fname}"
-        if exists(storage_path):
-            url = signed_url(storage_path, expiration=3600)
-            return _json_response({"downloadUrl": url, "filename": fname}, origin=origin)
-    return _error_response("excel not ready", status=404, origin=origin)
+    job = get_job(job_id)
+    if not job or not job.results:
+        return _error_response("results not ready", status=404, origin=origin)
+
+    fd, tmp_path = tempfile.mkstemp(suffix=".xlsx")
+    os.close(fd)
+    storage_path = f"jobs/{job_id}/outputs/stores_reviewed.xlsx"
+    try:
+        write_results_excel(
+            job.results.get("stores", []),
+            tmp_path,
+            job_id=job_id,
+        )
+        upload_file(
+            tmp_path,
+            storage_path,
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+    except Exception as exc:
+        return _error_response(f"failed to create excel: {exc}", status=500, origin=origin)
+    finally:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+
+    url = signed_url(storage_path, expiration=3600)
+    return _json_response({
+        "downloadUrl": url,
+        "filename": f"stores_{job_id}_reviewed.xlsx",
+    }, origin=origin)
 
 
 @https_fn.on_request()
