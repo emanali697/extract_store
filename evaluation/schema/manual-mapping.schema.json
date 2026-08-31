@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://store-extractor.local/schemas/manual-mapping.schema.json",
+  "title": "Store Extractor Manual Evaluation Mapping",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "sample_id", "mappings"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "sample_id": {"type": "string", "minLength": 1},
+    "mappings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["prediction_id", "entity_id"],
+        "properties": {
+          "prediction_id": {"type": "string", "minLength": 1},
+          "entity_id": {"type": ["string", "null"]},
+          "note": {"type": "string"}
+        }
+      }
+    }
+  }
+}

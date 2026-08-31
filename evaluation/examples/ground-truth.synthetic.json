@@ -1,0 +1,58 @@
+{
+  "schema_version": "1.0",
+  "dataset_id": "synthetic-eval-v1",
+  "samples": [
+    {
+      "sample_id": "synthetic-street-001",
+      "video_ref": "synthetic://street-001",
+      "notes": "Synthetic data only. No real merchant or phone data.",
+      "entities": [
+        {
+          "entity_id": "store-001",
+          "entity_type": "store",
+          "name_exact": "متجر النور التجريبي",
+          "accepted_names": ["متجر النور"],
+          "phone": {"visibility": "visible", "values": ["0501234001"]},
+          "frames": [{"start": 1, "end": 4}],
+          "tags": ["arabic", "clear"]
+        },
+        {
+          "entity_id": "store-002",
+          "entity_type": "service_business",
+          "name_exact": "مغسلة الصفاء التجريبية",
+          "accepted_names": [],
+          "phone": {"visibility": "not_visible", "values": []},
+          "frames": [{"start": 5, "end": 8}],
+          "tags": ["arabic", "angled"]
+        },
+        {
+          "entity_id": "store-003",
+          "entity_type": "store",
+          "name_exact": "تموينات المثال",
+          "accepted_names": [],
+          "phone": {"visibility": "visible", "values": ["0501234003"]},
+          "frames": [{"start": 9, "end": 12}],
+          "tags": ["arabic", "phone-small"]
+        },
+        {
+          "entity_id": "store-004",
+          "entity_type": "store",
+          "name_exact": "Synthetic Corner",
+          "accepted_names": [],
+          "phone": {"visibility": "unreadable", "values": []},
+          "frames": [{"start": 13, "end": 15}],
+          "tags": ["english", "blur"]
+        },
+        {
+          "entity_id": "advertisement-001",
+          "entity_type": "advertisement",
+          "name_exact": "إعلان تجريبي",
+          "accepted_names": [],
+          "phone": {"visibility": "not_visible", "values": []},
+          "frames": [{"start": 16, "end": 17}],
+          "tags": ["negative-example"]
+        }
+      ]
+    }
+  ]
+}

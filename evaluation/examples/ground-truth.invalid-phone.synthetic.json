@@ -1,0 +1,22 @@
+{
+  "schema_version": "1.0",
+  "dataset_id": "synthetic-invalid-v1",
+  "samples": [
+    {
+      "sample_id": "invalid-phone-sample",
+      "entities": [
+        {
+          "entity_id": "store-invalid-phone",
+          "entity_type": "store",
+          "name_exact": "متجر تجريبي غير صالح",
+          "accepted_names": [],
+          "phone": {
+            "visibility": "not_visible",
+            "values": ["0501234999"]
+          },
+          "frames": []
+        }
+      ]
+    }
+  ]
+}
