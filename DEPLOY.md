@@ -121,11 +121,39 @@ VITE_FIREBASE_PROJECT_ID=store-extract
 VITE_FIREBASE_STORAGE_BUCKET=store-extract.firebasestorage.app
 VITE_FIREBASE_SENDER_ID=...
 VITE_FIREBASE_APP_ID=...
+VITE_SENTRY_DSN=...
+VITE_SENTRY_ENVIRONMENT=production
+VITE_SENTRY_RELEASE=store-extractor@DEPLOY_VERSION
+VITE_SENTRY_TRACES_SAMPLE_RATE=0.1
 ```
 
 Use the actual Firebase Functions URL from the deploy step.
 
 4. Deploy.
+
+### Sentry monitoring
+
+Use **Settings → Projects → store-extract → Client Keys (DSN)** in Sentry.
+Configure the browser variables above in Vercel, and configure the following
+for Firebase Functions outside Git:
+
+```env
+SENTRY_DSN=...
+SENTRY_ENVIRONMENT=production
+SENTRY_RELEASE=store-extractor@DEPLOY_VERSION
+SENTRY_TRACES_SAMPLE_RATE=0.1
+```
+
+`SENTRY_AUTH_TOKEN` is not a runtime variable. Keep it out of the repository
+and browser bundle; it is only used locally for read-only verification, or as
+a protected CI secret if source-map uploading is added later.
+
+In Sentry, create an enabled Issue Alert for first-seen and regressed issues
+with an Email action for the intended user. SDK installation alone does not
+guarantee email delivery; verify a unique test issue and confirm receipt.
+Also enable **Settings → Security & Privacy → Prevent Storing of IP Addresses**
+for the organization. SDK-side PII settings do not replace this server-side
+privacy control for newly ingested events.
 
 ---
 

@@ -18,6 +18,7 @@ from pathlib import Path
 
 from db import Job, persist_job, set_log_lines, update_stage
 from config import PIPELINE_DIR, PIPELINE_PYTHON
+from sentry_setup import capture_pipeline_failure
 
 PIPELINE_MAIN = PIPELINE_DIR / "main.py"
 PIPELINE_MAIN_V5 = PIPELINE_DIR / "main_v5.py"
@@ -382,6 +383,7 @@ async def run_pipeline(job: Job) -> None:
             await _mark_stage(job, last_stage, "error")
         job.status = "error"
         job.error = f"v3 (main.py) exited with code {rc}"
+        capture_pipeline_failure("v3", job.job_id, rc)
         persist_job(job)
         return
     if last_stage is not None:
@@ -435,6 +437,7 @@ async def run_pipeline(job: Job) -> None:
                 "line": f"❌ Final visual verification failed with code {rc6}",
             })
             job.status = "error"
+            capture_pipeline_failure("v6", job.job_id, rc6)
             job.error = (
                 "Final Gemini visual verification failed; incomplete results "
                 "were not published. Retry the analysis when Google services are available."
