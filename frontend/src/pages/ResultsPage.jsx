@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAppStore } from '../store/appStore'
-import { downloadExcelUrl, downloadCsvUrl, deleteVideo, approveStores, fetchHealth, previewTradersPush, pushToTraders } from '../services/api'
+import { downloadExcelUrl, deleteVideo, approveStores, fetchHealth, previewTradersPush, pushToTraders } from '../services/api'
 
 const TIER_LABEL = {
   1: 'Tier 1 — مؤكد',
@@ -163,13 +163,11 @@ export default function ResultsPage() {
     }
   }
 
-  const handleDownload = async (kind) => {
-    setDownloadBusy(kind)
+  const handleDownload = async () => {
+    setDownloadBusy('excel')
     setDownloadError('')
     try {
-      const url = kind === 'excel'
-        ? await downloadExcelUrl(jobId)
-        : await downloadCsvUrl(jobId)
+      const url = await downloadExcelUrl(jobId)
       window.location.assign(url)
     } catch (e) {
       setDownloadError(
@@ -329,24 +327,12 @@ export default function ResultsPage() {
                   type="button"
                   className="btn btn-brand"
                   disabled={Boolean(downloadBusy)}
-                  onClick={() => handleDownload('excel')}
+                  onClick={handleDownload}
                 >
                   {downloadBusy === 'excel' && (
                     <span className="spinner-border spinner-border-sm me-2" />
                   )}
                   <i className="bi bi-file-earmark-excel me-1"></i> Excel كامل (v6)
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-outline-success"
-                  disabled={Boolean(downloadBusy)}
-                  onClick={() => handleDownload('csv')}
-                  title="اسم المتجر، الإحداثيات، التصنيف، الهاتف، الشارع، المدينة، الحي"
-                >
-                  {downloadBusy === 'csv' && (
-                    <span className="spinner-border spinner-border-sm me-2" />
-                  )}
-                  <i className="bi bi-filetype-csv me-1"></i> CSV للبرنامج الآخر
                 </button>
               </div>
               {downloadError && (

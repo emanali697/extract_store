@@ -335,6 +335,17 @@ def _multimodal_one(store, sign_paths, log_fn):
         "response_schema": MM_SCHEMA,
     }
 
+
+    # قراءة التحقق المستقل تستحق دقة وسائط عالية (الهاتف/الحروف الصغيرة)،
+    # لكن النموذج لا يدعم HIGH إلا لطلبات الصورة الواحدة؛ نفعّلها حينها فقط
+    # ونتجاهل الإعداد بصمت على نسخ SDK الأقدم التي لا تعرفه.
+    image_parts = (len(parts) - 1) // 2  # أول Part هو البرومبت ثم (نص+صورة) لكل دليل
+    if image_parts == 1:
+        try:
+            cfg["media_resolution"] = _types.MediaResolution.MEDIA_RESOLUTION_HIGH
+        except AttributeError:
+            pass
+
     for attempt in range(MULTIMODAL_RETRIES):
         try:
             resp = client.models.generate_content(
@@ -360,7 +371,12 @@ def _multimodal_one(store, sign_paths, log_fn):
         except json.JSONDecodeError as e:
             log_fn(f"  mm json err ({attempt + 1}): {e}")
         except Exception as e:
-            log_fn(f"  mm err ({attempt + 1}): {str(e)[:80]}")
+            err_text = str(e)
+            if "INVALID_ARGUMENT" in err_text and "media resolution" in err_text \
+                    and cfg.pop("media_resolution", None) is not None:
+                log_fn("  mm: media_resolution مرفوضة لهذا الطلب — إعادة بدونها")
+                continue
+            log_fn(f"  mm err ({attempt + 1}): {err_text[:80]}")
         time.sleep(MULTIMODAL_DELAY * (attempt + 1))
     return None
 
@@ -452,6 +468,9 @@ def multimodal_verify(stores, signs_dir: Path, log_fn=print):
                     s["name_ar"] = exact_name
                     if not any("\u0600" <= char <= "\u06ff" for char in exact_name):
                         s["name_en"] = exact_name
+                previous_phone = (s.get("phone") or "").strip()
+                if previous_phone and previous_phone != phone:
+                    s["phone_first_pass"] = previous_phone
                 s["phone"] = phone
                 s["phone_source"] = "gemini_visual_verified" if phone else "not_visible"
                 if s["multimodal"]["category"]:
@@ -506,9 +525,110 @@ def _name_is_incomplete(name):
     return not normalized or any(marker in normalized for marker in markers)
 
 
+# ----------  Field-level verification  ----------
+
+def _normalized_phone_digits(value):
+    """أرقام فقط بصيغة محلية (0...) لمقارنة حتمية بين المصادر المستقلة."""
+    arabic_digits = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
+    digits = re.sub(r"\D", "", str(value or "").translate(arabic_digits))
+    if digits.startswith("00966"):
+        digits = "0" + digits[5:]
+    elif digits.startswith("966") and len(digits) >= 11:
+        digits = "0" + digits[3:]
+    return digits
+
+
+def compute_phone_sources(store):
+    """
+    يجمع كل رقم هاتف نُسب للمتجر ومن أي مصدر مستقل جاء:
+      gemini_first  — القراءة البصرية الأولى (phone_first_pass أو phone الحالي)
+      gemini_verify — التحقق البصري المستقل (multimodal.phone)
+      ocr_votes     — تصويت Cloud Vision عبر ≥2 فريم (phones_all)
+      places        — هاتف مرشح Google Places المطابق
+    يرجع {normalized_phone: {source, ...}}.
+    """
+    sources = {}
+
+    def _add(value, source):
+        digits = _normalized_phone_digits(value)
+        if len(digits) < 7:
+            return
+        sources.setdefault(digits, set()).add(source)
+
+    mm = store.get("multimodal") or {}
+    first_pass = (store.get("phone_first_pass") or "").strip()
+    if first_pass:
+        _add(first_pass, "gemini_first")
+    elif store.get("phone_source") == "gemini_visual":
+        _add(store.get("phone"), "gemini_first")
+    _add(mm.get("phone"), "gemini_verify")
+    for entry in store.get("phones_all") or []:
+        try:
+            votes = int(entry.get("votes") or 0)
+        except (TypeError, ValueError, AttributeError):
+            votes = 0
+        if votes >= 2:
+            _add(entry.get("phone"), "ocr_votes")
+    candidate = (store.get("v5") or {}).get("candidate") or {}
+    _add(candidate.get("phone"), "places")
+    return sources
+
+
+def compute_field_verification(store):
+    """
+    بوابة تحقق لكل حقل على حدة (لا ترفض المتجر كله بسبب حقل واحد):
+      name     — اتفاق القراءة الأولى مع التحقق المستقل أو مطابقة v5 مؤكدة.
+      phone    — None لو لا هاتف أصلًا؛ True لو كل رقم معروض جاء من مصدرين
+                 مستقلين متفقين على كل الأرقام؛ False لو مصدر واحد أو اختلاف.
+      location — مرشح Google Places أو median GPS من عينتين فأكثر.
+    """
+    mm = store.get("multimodal") or {}
+    mm_name = (mm.get("name") or "").strip()
+    initial_name = (mm.get("initial_name") or store.get("name_ar") or "").strip()
+    name_verified = bool(mm_name and _names_agree(initial_name, mm_name))
+    v5_status = (store.get("v5") or {}).get("status")
+    if v5_status in ("confirmed_high", "confirmed_medium"):
+        name_verified = True
+
+    sources = compute_phone_sources(store)
+    verified_phones = {phone for phone, src in sources.items() if len(src) >= 2}
+    phones = store.get("_phones_clean")
+    if phones is None:
+        phones = [
+            digits for digits in
+            (_normalized_phone_digits(part) for part in _split_phones(store.get("phone")))
+            if len(digits) >= 7
+        ]
+    if phones:
+        phone_verified = all(
+            _normalized_phone_digits(phone) in verified_phones for phone in phones
+        )
+    else:
+        phone_verified = None
+
+    location_verified = (
+        v5_status in ("confirmed_high", "confirmed_medium")
+        or store.get("location_source") == "google_places"
+    )
+    if not location_verified and store.get("location_source") in (None, "dashcam_frame"):
+        try:
+            location_verified = int(store.get("gps_samples") or 0) >= 2
+        except (TypeError, ValueError):
+            location_verified = False
+
+    return {
+        "name": name_verified,
+        "phone": phone_verified,
+        "location": location_verified,
+        "phone_sources": {
+            phone: sorted(src) for phone, src in sorted(sources.items())
+        },
+    }
+
+
 # ----------  Final decision  ----------
 
-def _decide(store):
+def _decide_name_path(store):
     judge = store.get("_judge") or {}
     conf = float(judge.get("confidence", 0.5) or 0.5)
     reason = judge.get("reason", "")
@@ -585,6 +705,26 @@ def _decide(store):
     return "needs_human", conf, reason or "ثقة متوسطة — مراجعة بشرية", phones
 
 
+def _decide(store):
+    """قرار المتجر: مسار الاسم الحالي + بوابة تحقق الهاتف المستقلة.
+
+    رقم هاتف موجود من مصدر واحد فقط (أو بمصادر متعارضة) يمنع auto_passed
+    ويحوّل المتجر للمراجعة البشرية لتأكيد الرقم؛ غياب الهاتف لا يمنع القبول.
+    """
+    decision, conf, reason, phones = _decide_name_path(store)
+    if decision != "auto_passed":
+        return decision, conf, reason, phones
+    verification = compute_field_verification(store)
+    if verification["phone"] is False:
+        return (
+            "needs_human",
+            min(float(conf or 0), 0.84),
+            "الهاتف مقروء من مصدر واحد فقط أو يختلف بين المصادر؛ يحتاج تأكيدًا بشريًا",
+            phones,
+        )
+    return decision, conf, reason, phones
+
+
 # ----------  Main entry  ----------
 
 def auto_review(stores, log_fn=print, signs_dir=None):
@@ -650,6 +790,11 @@ def auto_review(stores, log_fn=print, signs_dir=None):
             reason = f"احتمال تكرار غير محسوم مع: {duplicate_names}"
         counts[decision] += 1
 
+        verification = compute_field_verification(s)
+        s["name_verified"] = verification["name"]
+        s["phone_verified"] = verification["phone"]
+        s["location_verified"] = verification["location"]
+
         mm = s.get("multimodal") or {}
         s["auto_review"] = {
             "phones_clean": phones,
@@ -660,6 +805,7 @@ def auto_review(stores, log_fn=print, signs_dir=None):
             "multimodal_raw": mm.get("raw_text", ""),
             "multimodal_clarity": mm.get("image_clarity"),
             "sign_image": mm.get("sign_image"),
+            "field_verification": verification,
         }
         if decision == "auto_passed":
             # Prefer the multimodal name when it's clearer than the OCR one

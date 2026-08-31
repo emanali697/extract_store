@@ -1,0 +1,11 @@
+{
+  "schema_version": "1.0",
+  "sample_id": "synthetic-street-001",
+  "mappings": [
+    {"prediction_id": "prediction-0001", "entity_id": "store-001"},
+    {"prediction_id": "prediction-0002", "entity_id": "store-002"},
+    {"prediction_id": "prediction-0003", "entity_id": "store-001", "note": "Intentional duplicate"},
+    {"prediction_id": "prediction-0004", "entity_id": "advertisement-001"},
+    {"prediction_id": "prediction-0005", "entity_id": "store-003"}
+  ]
+}

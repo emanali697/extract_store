@@ -18,11 +18,11 @@ SPEED_TO_INTERVAL = [
     (40, 0.5),    # 20-40 km/h → كل 0.5 ثانية
     (999, 0.4),   # 40+ km/h → كل 0.4 ثانية (بدل 0.25 عشان أوضح)
 ]
-BASE_EXTRACTION_INTERVAL = 0.5  # نقطع كل نص ثانية في الـ pass الأول (تسريع OCR للـ GPS)
+BASE_EXTRACTION_INTERVAL = float(os.environ.get("BASE_EXTRACTION_INTERVAL", "0.25"))  # نقطع كل 0.25 ثانية في الـ pass الأول (تسريع OCR للـ GPS + مرشحان أو أكثر لكل نافذة اختيار)
 STATIONARY_SPEED_THRESHOLD = 2  # أقل من 2 كم/س = السيارة واقفة، نتخطى
 
 # === Image Enhancement ===
-SIGN_ZOOM_FACTOR = 2.0  # تكبير اللوحات
+SIGN_ZOOM_FACTOR = 2.0  # متروك للتوافق؛ قص اللافتات لم يعد يكبّر (الدقة الأصلية تحفظ تفاصيل الحروف)
 GPS_ZOOM_FACTOR = 3.0   # تكبير GPS
 SIGN_CROP_Y_RANGE = (0.08, 0.65)  # نسبة ارتفاع منطقة اللوحات من الإطار
 GPS_CROP_BOTTOM_PX = 100  # بيكسلات من الأسفل لمنطقة GPS
@@ -30,6 +30,9 @@ GPS_CROP_X_RATIO = 0.45   # نسبة عرض GPS من اليسار
 
 # === OCR ===
 CLOUD_VISION_BATCH_DELAY = 0.1  # تأخير بين استدعاءات OCR
+# قراءة نص اللافتات بـ Cloud Vision كقارئ مستقل بجانب Gemini (تصويت هواتف + دليل أسماء)
+SIGN_OCR_ENABLED = os.environ.get("SIGN_OCR_ENABLED", "true").strip().lower() not in ("0", "false", "no", "off")
+OCR_SIGN_LANGUAGE_HINTS = ["ar", "en"]
 
 # === Gemini ===
 GEMINI_MODEL = "gemini-2.5-flash"

@@ -1,0 +1,33 @@
+name: SDD validation
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Validate all SDD tasks
+        run: python scripts/sdd_check.py --all
+
+      - name: Require SDD task for behavior changes
+        if: github.event_name == 'pull_request'
+        env:
+          SDD_PR_BODY: ${{ github.event.pull_request.body }}
+        run: python scripts/sdd_check.py --all --changed-base "origin/${{ github.base_ref }}"

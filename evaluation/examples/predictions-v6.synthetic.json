@@ -1,0 +1,32 @@
+[
+  {
+    "name_ar": "متجر النور التجريبي",
+    "phone": "0501234001",
+    "frame": "1-3",
+    "auto_review": {"decision": "auto_passed"}
+  },
+  {
+    "name_ar": "مغسلة الصفا التجريبية",
+    "phone": "",
+    "frame": "5-8",
+    "auto_review": {"decision": "needs_human"}
+  },
+  {
+    "name_ar": "متجر النور",
+    "phone": "0501234001",
+    "frame": "4",
+    "auto_review": {"decision": "auto_passed"}
+  },
+  {
+    "name_ar": "إعلان تجريبي",
+    "phone": "0509999999",
+    "frame": "16",
+    "auto_review": {"decision": "auto_passed"}
+  },
+  {
+    "name_ar": "تموينات المثال",
+    "phone": "0501234099",
+    "frame": "9-12",
+    "auto_review": {"decision": "auto_passed"}
+  }
+]

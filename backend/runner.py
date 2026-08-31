@@ -18,6 +18,7 @@ from pathlib import Path
 
 from config import PIPELINE_MAIN, PIPELINE_DIR, PIPELINE_PYTHON
 from jobs import Job, manager
+from sentry_setup import capture_pipeline_failure
 from stages import parse_progress_hint, parse_stage_marker
 
 PIPELINE_MAIN_V5 = PIPELINE_DIR / "main_v5.py"
@@ -356,6 +357,7 @@ async def run_pipeline(job: Job) -> None:
             await _mark_stage(job, last_stage, "error")
         job.status = "error"
         job.error = f"v3 (main.py) exited with code {rc}"
+        capture_pipeline_failure("v3", job.job_id, rc)
         manager.persist(job)
         await _emit(job, {"type": "status", "status": "error", "error": job.error})
         return
@@ -403,6 +405,7 @@ async def run_pipeline(job: Job) -> None:
                 "line": f"❌ Final visual verification failed with code {rc6}",
             })
             job.status = "error"
+            capture_pipeline_failure("v6", job.job_id, rc6)
             job.error = (
                 "فشل التحقق البصري النهائي عبر Gemini؛ لم يتم نشر نتائج ناقصة. "
                 "أعد المحاولة عند استقرار خدمات Google."

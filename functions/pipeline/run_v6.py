@@ -41,7 +41,7 @@ from status_check import run_tier1
 # `apply_tier3` (which is generic — flags every still-unclassified store as
 # "يحتاج تحقق ميداني") is safe to reuse across jobs.
 from finalize_v6 import apply_tier3
-from auto_review import auto_review, multimodal_verify
+from auto_review import auto_review, multimodal_verify, compute_field_verification
 from exporter_v6 import export_excel_v6
 
 
@@ -185,6 +185,15 @@ def main():
     # ---- Location enrichment (source, accuracy, place_id) ----
     log("\n--- Enriching location metadata ---")
     stores = enrich_location_meta(stores)
+
+    # ---- Field-level verification flags (name/phone/location) ----
+    # يُعاد الحساب بعد location enrichment حتى يعتمد location_verified على
+    # المصدر النهائي للموقع (Google Places أو median GPS بعدة عينات).
+    for s in stores:
+        verification = compute_field_verification(s)
+        s["name_verified"] = verification["name"]
+        s["phone_verified"] = verification["phone"]
+        s["location_verified"] = verification["location"]
 
     # Rejected candidates are useful during processing but must never appear
     # as extracted stores or be eligible for a later database push.

@@ -358,3 +358,19 @@ If deploying Firebase Functions, you will need to:
 - On Windows, always run the backend before the frontend; the frontend needs the API on `:8000`.
 - Firebase Functions do not support WebSockets; progress is streamed via Firestore snapshots.
 - The Cloud Tasks pipeline worker uses 4 GB memory and a 30-minute dispatch deadline. Split videos that cannot complete within that limit or move the worker to a longer-running compute service.
+
+---
+
+## Specification-Driven Development (mandatory)
+
+Behavior-changing work follows the repository SDD contract in `SDD.md`:
+
+1. Create `.tasks/<kebab-case-name>/spec.md` and obtain `Status: Approved` before implementation.
+2. Create and approve `plan.md` before changing runtime behavior.
+3. Implement only the approved scope and update the documents if the scope changes.
+4. Create `check.md`, record actual verification evidence, and mark all documents complete/passed before calling the task done.
+5. Run `python scripts/sdd_check.py --all` before opening or updating a pull request.
+
+Bug fixes, features, refactors, API/schema changes, Firebase rules, and deployment behavior all require an SDD task. A documentation typo, comment-only change, generated file, or dependency lockfile-only change may be exempted with a precise `SDD-Exempt: <reason>` in the pull-request description.
+
+Always read `rules/general-rules.md`, `rules/project-rules.md`, and the active task documents before editing. Never enable or perform writes to `traders-data-live` unless the user explicitly authorizes that change in a separate approved SDD task.

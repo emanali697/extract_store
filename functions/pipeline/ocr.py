@@ -16,7 +16,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from google.cloud import vision
 from PIL import Image, ImageEnhance, ImageFilter
 
-from config import CLOUD_VISION_BATCH_DELAY  # kept for compat (currently unused)
+from config import (
+    CLOUD_VISION_BATCH_DELAY,  # kept for compat (currently unused)
+    OCR_SIGN_LANGUAGE_HINTS,
+)
 from extractor import parse_gps_text
 from progress import emit_progress, progress_ticker
 
@@ -170,31 +173,48 @@ def ocr_image(image_path):
     return text
 
 
-def _load_batch_requests(paths, mode='standard'):
-    """تحويل قائمة مسارات لـ AnnotateImageRequest list (مع معالجة مسبقة)."""
+def _load_batch_requests(paths, mode='standard', feature_type=None, language_hints=None):
+    """تحويل قائمة مسارات لـ AnnotateImageRequest list (مع معالجة مسبقة).
+
+    feature_type الافتراضي DOCUMENT_TEXT_DETECTION (السلوك الحالي لمسار GPS)،
+    وlanguage_hints تُمرر كـ ImageContext عند توفرها.
+    """
+    if feature_type is None:
+        feature_type = vision.Feature.Type.DOCUMENT_TEXT_DETECTION
+    image_context = None
+    if language_hints:
+        image_context = vision.ImageContext(language_hints=list(language_hints))
+
     requests = []
     for p in paths:
         pil_img = _open_image(p)
         if pil_img is None:
             # لو مقدرناش نفتحها، نبعت request فاضي هيتعامل معاه على إنه فاضي
             image = vision.Image(content=b'')
-            feature = vision.Feature(type_=vision.Feature.Type.DOCUMENT_TEXT_DETECTION)
-            requests.append(vision.AnnotateImageRequest(image=image, features=[feature]))
+            feature = vision.Feature(type_=feature_type)
+            requests.append(vision.AnnotateImageRequest(
+                image=image, features=[feature], image_context=image_context,
+            ))
             continue
         content = _preprocess_for_ocr(pil_img, mode=mode)
         image = vision.Image(content=content)
-        feature = vision.Feature(type_=vision.Feature.Type.DOCUMENT_TEXT_DETECTION)
-        requests.append(vision.AnnotateImageRequest(image=image, features=[feature]))
+        feature = vision.Feature(type_=feature_type)
+        requests.append(vision.AnnotateImageRequest(
+            image=image, features=[feature], image_context=image_context,
+        ))
     return requests
 
 
-def _run_one_batch(batch_idx, paths):
+def _run_one_batch(batch_idx, paths, feature_type=None, language_hints=None):
     """
     شغّل دفعة واحدة (≤16 صورة) عن طريق batch_annotate_images.
     يرجع (batch_idx, results_list_in_order) — نفس ترتيب الـ paths.
     لو فشل بعد كل المحاولات، الصور هترجع نص فاضي.
     """
-    requests = _load_batch_requests(paths, mode='standard')
+    requests = _load_batch_requests(
+        paths, mode='standard',
+        feature_type=feature_type, language_hints=language_hints,
+    )
     last_err = None
 
     for attempt in range(BATCH_RETRIES):
@@ -241,13 +261,15 @@ def _retry_empty_results(paths, first_results):
     return first_results
 
 
-def batch_ocr(image_paths, log_fn=print, workers=PARALLEL_BATCHES):
+def batch_ocr(image_paths, log_fn=print, workers=PARALLEL_BATCHES,
+              feature_type=None, language_hints=None):
     """
     قراءة مجموعة صور — ترجع قائمة النصوص بنفس ترتيب الصور.
 
     المعمارية:
       نقسم الصور لمجموعات من 16، ونشغّل `workers` مجموعة في نفس الوقت.
       بعد كل الـ batches، نعيد الصور الفاضية بمعالجة أقوى.
+      feature_type/language_hints يختاران نوع الكشف (الافتراضي DOCUMENT).
     """
     n = len(image_paths)
     if n == 0:
@@ -268,7 +290,10 @@ def batch_ocr(image_paths, log_fn=print, workers=PARALLEL_BATCHES):
 
     with ThreadPoolExecutor(max_workers=workers) as executor:
         futures = {
-            executor.submit(_run_one_batch, start, paths): (start, len(paths))
+            executor.submit(
+                _run_one_batch, start, paths,
+                feature_type=feature_type, language_hints=language_hints,
+            ): (start, len(paths))
             for start, paths in batches
         }
         for future in as_completed(futures):
@@ -288,6 +313,24 @@ def batch_ocr(image_paths, log_fn=print, workers=PARALLEL_BATCHES):
         log_fn(f"  OCR retry انتهى: فاضية قبل={empty_before} → بعد={empty_after}")
 
     return results
+
+
+def read_signs_text(image_paths, log_fn=print):
+    """
+    قراءة نص اللافتات كقارئ مستقل بجانب Gemini.
+
+    نستخدم TEXT_DETECTION (المناسب للافتات/النصوص المتناثرة في المشهد) مع
+    language hints عربي/إنجليزي، والصور الفارغة تعاد تلقائيًا بوضع
+    DOCUMENT_TEXT_DETECTION + معالجة sharp داخل batch_ocr.
+    """
+    log_fn(f"Reading sign text from {len(image_paths)} images "
+           "(TEXT_DETECTION, ar/en hints)...")
+    return batch_ocr(
+        image_paths,
+        log_fn=log_fn,
+        feature_type=vision.Feature.Type.TEXT_DETECTION,
+        language_hints=OCR_SIGN_LANGUAGE_HINTS,
+    )
 
 
 def read_gps_from_images(gps_image_paths, log_fn=print):

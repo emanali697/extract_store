@@ -23,6 +23,9 @@ from config import (
     PIPELINE_MAIN,
     TRADERS_WRITES_ENABLED,
 )
+from sentry_setup import capture_unexpected_exception, init_sentry
+
+init_sentry("local-backend")
 
 
 def _pipeline_status() -> dict:
@@ -69,6 +72,22 @@ class ApproveRequest(BaseModel):
 class ReviewDecisionRequest(BaseModel):
     action: str
     store: dict = Field(default_factory=dict)
+
+
+async def _run_pipeline_safely(job: Job) -> None:
+    """Keep background-task failures visible without exposing exception details."""
+    try:
+        await run_pipeline(job)
+    except Exception as exc:
+        capture_unexpected_exception(exc, "run_pipeline", job.job_id)
+        job.status = "error"
+        job.error = "Unexpected pipeline failure; the error was reported."
+        manager.persist(job)
+        await manager.publish(job.job_id, {
+            "type": "status",
+            "status": "error",
+            "error": job.error,
+        })
 
 
 def _job_to_dict(job: Job, *, include_results: bool = True) -> dict:
@@ -142,7 +161,7 @@ async def create_job(settings: JobSettings):
     payload = settings.model_dump()
     video_path = payload.pop("videoPath")
     job = manager.create(video_path, payload)
-    asyncio.create_task(run_pipeline(job))
+    asyncio.create_task(_run_pipeline_safely(job))
     return {"jobId": job.job_id, "status": job.status}
 
 

@@ -1,0 +1,120 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://store-extractor.local/schemas/ground-truth.schema.json",
+  "title": "Store Extractor Ground Truth",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "dataset_id", "samples"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "dataset_id": {"type": "string", "minLength": 1},
+    "samples": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/sample"}
+    }
+  },
+  "$defs": {
+    "sample": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sample_id", "entities"],
+      "properties": {
+        "sample_id": {"type": "string", "minLength": 1},
+        "video_ref": {"type": "string"},
+        "job_id": {"type": "string"},
+        "notes": {"type": "string"},
+        "entities": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/entity"}
+        }
+      }
+    },
+    "entity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["entity_id", "entity_type", "name_exact", "phone"],
+      "properties": {
+        "entity_id": {"type": "string", "minLength": 1},
+        "entity_type": {
+          "enum": [
+            "store",
+            "service_business",
+            "institution",
+            "advertisement",
+            "vehicle",
+            "road_sign",
+            "other"
+          ]
+        },
+        "name_exact": {"type": "string"},
+        "accepted_names": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true,
+          "default": []
+        },
+        "phone": {"$ref": "#/$defs/phone"},
+        "frames": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/frameRange"},
+          "default": []
+        },
+        "coordinates": {"$ref": "#/$defs/coordinates"},
+        "tags": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true,
+          "default": []
+        },
+        "duplicate_group": {"type": "string"},
+        "notes": {"type": "string"}
+      }
+    },
+    "phone": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["visibility", "values"],
+      "properties": {
+        "visibility": {"enum": ["visible", "not_visible", "unreadable"]},
+        "values": {
+          "type": "array",
+          "items": {"type": "string", "pattern": "^[0-9٠-٩۰-۹+ ()-]{7,24}$"},
+          "uniqueItems": true
+        }
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"visibility": {"const": "visible"}}},
+          "then": {"properties": {"values": {"minItems": 1}}}
+        },
+        {
+          "if": {
+            "properties": {
+              "visibility": {"enum": ["not_visible", "unreadable"]}
+            }
+          },
+          "then": {"properties": {"values": {"maxItems": 0}}}
+        }
+      ]
+    },
+    "frameRange": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start", "end"],
+      "properties": {
+        "start": {"type": "integer", "minimum": 1},
+        "end": {"type": "integer", "minimum": 1}
+      }
+    },
+    "coordinates": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["lat", "lng"],
+      "properties": {
+        "lat": {"type": "number", "minimum": -90, "maximum": 90},
+        "lng": {"type": "number", "minimum": -180, "maximum": 180}
+      }
+    }
+  }
+}

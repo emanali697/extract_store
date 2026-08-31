@@ -1,4 +1,5 @@
 # Backend secrets and runtime outputs
+**/__pycache__/
 backend/.env
 backend/.env.local
 backend/*.key.json
@@ -27,3 +28,14 @@ frontend/*.local
 
 .vercel/
 .env.local
+.env.sentry-build-plugin
+frontend/.env.sentry-build-plugin
+
+# Local SDD source clone, agent auth logs, and analysis artifacts
+.sdd-template-source/
+.gh-auth-*.txt
+comparison_output/
+
+# Local extraction evaluation data and generated reports (may contain PII)
+evaluation/local/
+evaluation/reports/

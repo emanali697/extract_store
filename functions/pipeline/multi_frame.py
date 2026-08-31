@@ -62,10 +62,11 @@ def aggregate_store_signals(store, ocr_texts, gps_data, processed_frames):
 
     for fi in frame_indices:
         pos = idx_to_pos.get(fi)
-        if pos is None or pos >= len(ocr_texts):
+        if pos is None:
             continue
 
-        text = ocr_texts[pos] or ''
+        # OCR قد يكون معطلًا (قائمة فارغة)؛ لا نمنع حينها GPS median.
+        text = ocr_texts[pos] if pos < len(ocr_texts) else ''
         if text:
             ocr_chunks.append(text)
             phones = find_phones_in_text(text)
@@ -116,25 +117,32 @@ def best_sign_image(store_signals, processed_frames):
 def enrich_stores_with_aggregates(stores, ocr_texts, gps_data, processed_frames):
     """
     إضافة الـ multi-frame aggregation لكل متجر:
-    - تصويت تليفونات (دقة أعلى)
+    - تصويت تليفونات OCR (دليل مستقل) دون استبدال هاتف Gemini المقروء بصريًا
     - median GPS (مقاوم لقفزات OCR)
+    - نص OCR المدمج كدليل (`vision_ocr_text`)
     - أحسن صورة لافتة
     """
     for store in stores:
         signals = aggregate_store_signals(store, ocr_texts, gps_data, processed_frames)
 
-        # تليفونات: استبدل التليفون بأعلى تصويت
+        # تليفونات OCR: تصويت عبر الفريمات كدليل مستقل.
+        # هاتف Gemini البصري له الأولوية؛ OCR يملأ الهاتف فقط لو كان فارغًا.
         phones_voted = signals['phones_voted']
         if phones_voted:
             top = phones_voted[0]
-            store['phone'] = top[0]
-            store['phone_kind'] = top[1]
             store['phone_votes'] = top[2]
             store['phones_all'] = [
                 {'phone': p, 'kind': k, 'votes': v} for p, k, v in phones_voted
             ]
+            if not (store.get('phone') or '').strip():
+                store['phone'] = top[0]
+                store['phone_kind'] = top[1]
+                store['phone_source'] = 'cloud_vision_ocr'
         else:
             store['phones_all'] = []
+
+        if signals['ocr_combined']:
+            store['vision_ocr_text'] = signals['ocr_combined']
 
         # GPS: استخدم median من فريمات المتجر فعلاً
         lat, lng = signals['gps_best']

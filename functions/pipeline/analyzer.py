@@ -104,10 +104,15 @@ For every visible store:
 
 
 def _image_bytes(path: str) -> bytes:
-    """Prepare a sharp, bounded JPEG for fast multimodal requests."""
+    """Prepare a sharp, bounded JPEG for fast multimodal requests.
+
+    The bound is just above native 4K-strip width so dashcam sign crops keep
+    their original detail; only larger inputs are downscaled. Enhancement
+    (contrast + unsharp) is the single sharpening point in the image chain.
+    """
     with Image.open(path) as image:
         image = image.convert("RGB")
-        max_width = 3000
+        max_width = 3840
         if image.width > max_width:
             height = max(1, round(image.height * max_width / image.width))
             image = image.resize((max_width, height), Image.Resampling.LANCZOS)

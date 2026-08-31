@@ -17,6 +17,9 @@ from typing import Any
 import firebase_admin
 from firebase_admin import firestore, functions as admin_functions
 from firebase_functions import https_fn, pubsub_fn, tasks_fn, options, params
+from sentry_setup import capture_unexpected_exception, init_sentry
+
+init_sentry("firebase-functions")
 
 TRADERS_SECRET = params.SecretParam("TRADERS_SERVICE_ACCOUNT_JSON")
 from google.cloud import pubsub_v1
@@ -647,6 +650,7 @@ def _execute_pipeline_job(job_id: str) -> None:
         persist_job(job)
 
     except Exception as e:
+        capture_unexpected_exception(e, "execute_pipeline_job", job_id)
         job.status = "error"
         job.error = str(e)
         persist_job(job)
