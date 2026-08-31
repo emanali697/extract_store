@@ -18,15 +18,16 @@ from datetime import datetime
 sys.stdout.reconfigure(encoding='utf-8')
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from config import GCP_CREDENTIALS
+from config import GCP_CREDENTIALS, SIGN_OCR_ENABLED
 # Only point to a service-account file if one was explicitly provided. In
 # Cloud Functions the runtime credentials are used automatically.
 if GCP_CREDENTIALS and os.path.exists(GCP_CREDENTIALS):
     os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = GCP_CREDENTIALS
 
 from extractor import extract_frames_pass1, filter_frames_by_speed, process_selected_frames
-from ocr import read_gps_from_images
+from ocr import read_gps_from_images, read_signs_text
 from analyzer import run_analysis
+from multi_frame import enrich_stores_with_aggregates
 from exporter import export_excel
 
 
@@ -114,11 +115,28 @@ def main():
     gps_for_processed = [{'speed': p.get('speed'), 'lat': p.get('lat'), 'lng': p.get('lng')}
                          for p in processed]
 
-    # === Stage 5: Direct visual reading with Gemini ===
-    # Cloud Vision OCR remains limited to the GPS overlay above. Store names
-    # and phone numbers are read directly from adjacent sign images by Gemini.
-    log("\n--- STAGE 5: Gemini visual sign reading ---")
-    stores = run_analysis(processed, [], gps_for_processed, log_fn=log)
+    # === Stage 5: Cloud Vision sign text + Gemini visual reading ===
+    # Cloud Vision reads sign text as an independent reader (phone voting and
+    # name evidence), while Gemini reads names/phones visually from the same
+    # adjacent sign images. GPS overlay OCR above is unchanged.
+    log("\n--- STAGE 5: Sign text (Cloud Vision) + Gemini visual reading ---")
+    ocr_texts = []
+    if SIGN_OCR_ENABLED and processed:
+        try:
+            ocr_texts = read_signs_text(
+                [p['sign_path'] for p in processed], log_fn=log
+            )
+        except Exception as exc:
+            # OCR المستقل دليل داعم فقط؛ فشله لا يوقف القراءة البصرية.
+            log(f"WARNING: sign OCR failed, continuing with Gemini only: {exc}")
+            ocr_texts = []
+    stores = run_analysis(processed, ocr_texts, gps_for_processed, log_fn=log)
+
+    # === Stage 5B: multi-frame aggregation ===
+    # median GPS عبر فريمات الدليل + تصويت هواتف OCR كدليل مستقل لكل متجر.
+    stores = enrich_stores_with_aggregates(
+        stores, ocr_texts, gps_for_processed, processed
+    )
 
     # === Stage 6: Evidence validation ===
     log("\n--- STAGE 6: Gemini evidence validation ---")
